@@ -12,6 +12,7 @@ class TextDataset(torch.utils.data.Dataset):
 		self.data = []
 		self.vocab = {}
 		self.inverse_vocab = {}
+		
 
 		# 第一步：统计所有单词的频率
 		word_counter = Counter()
