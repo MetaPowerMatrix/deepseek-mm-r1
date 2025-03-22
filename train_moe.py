@@ -15,15 +15,15 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 import numpy as np
 
-# 导入MoE模型
+# 导入MoE模型和数据集
 from simple_moe import SimpleMoE, TransformerMoE, count_parameters
+from dataset_moe import MoEDataset, create_dataloader, Tokenizer
 
 
 # --------------------- 配置参数 ---------------------
@@ -63,83 +63,76 @@ class TrainingConfig:
 
     # 路径设置
     dataset_path = "./data/train_data.pt"  # 训练数据路径
+    vocab_path = "./data/tokenizer.json"  # 词表路径（使用tokenizer.json作为词表）
     output_dir = "./checkpoints_moe"  # 模型保存路径
     log_dir = "./logs_moe"  # 日志保存路径
-
-
-# --------------------- 自定义数据集 ---------------------
-class MoEDataset(Dataset):
-    """用于MoE模型的数据集类"""
     
-    def __init__(self, file_path, max_seq_length=None, model_type="simple_moe"):
-        self.model_type = model_type
-        
-        if not os.path.exists(file_path):
-            # 如果没有真实数据集，创建合成数据集
-            self.create_synthetic_dataset(file_path, max_seq_length, model_type)
-        
-        # 加载数据集
-        self.data = torch.load(file_path)
-        
-    def create_synthetic_dataset(self, file_path, max_seq_length, model_type):
-        """创建合成数据集用于训练"""
-        num_samples = 1000  # 合成样本数量
-        
-        if model_type == "simple_moe":
-            # 为SimpleMoE创建向量数据
-            data = torch.randn(num_samples, 1024)  # 随机输入特征
-            labels = torch.randn(num_samples, 1024)  # 随机标签
-            
-            self.data = [(x, y) for x, y in zip(data, labels)]
-            
-        else:  # transformer_moe
-            # 为TransformerMoE创建序列数据
-            data = torch.randint(0, 30000, (num_samples, max_seq_length))  # 随机token序列
-            labels = data.clone()  # 自回归任务中，输入即标签
-            
-            self.data = [(x, y) for x, y in zip(data, labels)]
-        
-        # 创建输出目录
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        
-        # 保存数据集
-        torch.save(self.data, file_path)
-        logging.info(f"创建合成数据集: {file_path}, 样本数: {num_samples}")
-        
-    def __len__(self):
-        return len(self.data)
+    # 数据设置
+    text_file = None  # 原始文本文件，如果提供，则从该文件创建数据集
+
+
+# --------------------- 数据加载器封装 ---------------------
+def prepare_dataloader(config):
+    """准备数据加载器"""
+    # 加载或创建分词器
+    tokenizer = None
     
-    def __getitem__(self, idx):
-        return self.data[idx]
-
-
-# --------------------- 数据加载器 ---------------------
-def create_dataloader(config):
+    if config.model_type == "transformer_moe":
+        # 首先尝试加载指定的tokenizer.json文件
+        if os.path.exists(config.vocab_path):
+            try:
+                logging.info(f"从{config.vocab_path}加载词表...")
+                tokenizer = Tokenizer.from_file(config.vocab_path)
+                logging.info(f"成功加载词表，大小: {len(tokenizer.token_to_id)}")
+            except Exception as e:
+                logging.warning(f"从{config.vocab_path}加载词表失败: {str(e)}")
+                
+                # 尝试加载默认词表
+                tokenizer = Tokenizer.create_default()
+        else:
+            logging.info(f"词表文件{config.vocab_path}不存在，尝试创建默认词表")
+            # 确保目录存在
+            os.makedirs(os.path.dirname(config.vocab_path), exist_ok=True)
+            tokenizer = Tokenizer.create_default(save_path=config.vocab_path)
+        
+        # 更新配置中的词表大小
+        config.vocab_size = len(tokenizer.token_to_id)
+        logging.info(f"词表大小设置为: {config.vocab_size}")
+    
+    # 如果提供了原始文本文件，则从文本创建数据集
+    if config.text_file and os.path.exists(config.text_file):
+        logging.info(f"从文本文件创建数据集: {config.text_file}")
+        
+        if config.model_type == "transformer_moe":
+            MoEDataset.create_from_text(
+                file_path=config.text_file,
+                output_path=config.dataset_path,
+                tokenizer=tokenizer,
+                block_size=config.max_seq_length
+            )
+        else:
+            logging.warning("仅TransformerMoE模型支持从文本创建数据集")
+    
+    # 创建数据集
     dataset = MoEDataset(
         file_path=config.dataset_path,
         max_seq_length=config.max_seq_length,
-        model_type=config.model_type
+        model_type=config.model_type,
+        tokenizer=tokenizer
     )
     
-    sampler = torch.utils.data.distributed.DistributedSampler(
-        dataset,
-        num_replicas=config.num_gpus,
-        shuffle=True
-    ) if config.num_gpus > 1 else None
-    
-    dataloader = DataLoader(
-        dataset,
+    # 创建数据加载器
+    return create_dataloader(
+        dataset=dataset,
         batch_size=config.batch_size,
-        sampler=sampler,
-        shuffle=(sampler is None),
-        num_workers=4,
-        pin_memory=True
-    )
-    return dataloader
+        num_gpus=config.num_gpus,
+        shuffle=True,
+        num_workers=4
+    ), tokenizer
 
 
 # --------------------- 模型初始化 ---------------------
-def initialize_model(config):
+def initialize_model(config, tokenizer=None):
     if config.model_type == "simple_moe":
         model = SimpleMoE(
             input_size=config.input_size,
@@ -149,8 +142,17 @@ def initialize_model(config):
             k=config.k
         )
     else:  # transformer_moe
+        # 如果有分词器，使用分词器的词表大小
+        if tokenizer:
+            vocab_size = len(tokenizer.token_to_id)
+            # 更新配置
+            config.vocab_size = vocab_size
+            logging.info(f"使用分词器词表大小: {vocab_size}")
+        else:
+            vocab_size = config.vocab_size
+            
         model = TransformerMoE(
-            vocab_size=config.vocab_size,
+            vocab_size=vocab_size,
             d_model=config.d_model,
             num_heads=config.num_heads,
             num_layers=config.num_layers,
@@ -267,7 +269,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, loss_fn, scaler, config
         # 每50步打印一次日志
         if step % 50 == 0:
             items_seen = (step + 1) * config.batch_size
-            avg_loss = accumulated_loss / (step % 50 + 1)
+            avg_loss = accumulated_loss / (step % 50 + 1) if step % 50 > 0 else accumulated_loss
             lr = optimizer.param_groups[0]["lr"]
             logging.info(
                 f"Epoch {epoch+1} | Step {step}/{len(dataloader)} | "
@@ -303,6 +305,55 @@ def evaluate(model, dataloader, loss_fn, config):
     return total_loss / len(dataloader)
 
 
+# --------------------- 文本生成函数 (用于TransformerMoE) ---------------------
+def generate_text(model, tokenizer, start_text, max_length=100, temperature=1.0, device="cpu"):
+    """
+    使用训练好的TransformerMoE模型生成文本
+    
+    参数:
+        model: 训练好的TransformerMoE模型
+        tokenizer: 分词器
+        start_text: 生成的起始文本
+        max_length: 最大生成长度
+        temperature: 采样温度，越高越随机
+        device: 计算设备
+    
+    返回:
+        生成的文本
+    """
+    if not tokenizer:
+        logging.error("生成文本需要分词器")
+        return start_text
+    
+    model.eval()
+    
+    # 将起始文本转换为token ids
+    input_ids = torch.tensor(tokenizer.encode(start_text), dtype=torch.long).unsqueeze(0).to(device)
+    
+    # 生成文本
+    with torch.no_grad():
+        for _ in range(max_length):
+            # 获取模型预测
+            outputs = model(input_ids)
+            next_token_logits = outputs[0, -1, :] / temperature
+            
+            # 采样下一个token
+            probs = torch.softmax(next_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+            
+            # 拼接到输入序列
+            input_ids = torch.cat([input_ids, next_token.unsqueeze(0)], dim=1)
+            
+            # 如果生成了结束符，提前结束
+            if next_token.item() == tokenizer.special_tokens.get("<eos>", -1):
+                break
+    
+    # 解码生成的token序列
+    output_text = tokenizer.decode(input_ids[0].tolist())
+    
+    return output_text
+
+
 # --------------------- 主函数 ---------------------
 def main():
     # 初始化配置
@@ -312,6 +363,7 @@ def main():
     # 创建输出目录
     os.makedirs(config.output_dir, exist_ok=True)
     os.makedirs(config.log_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(config.vocab_path), exist_ok=True)
     
     # 设置日志
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -333,14 +385,16 @@ def main():
     for key, value in vars(config).items():
         logging.info(f"  {key}: {value}")
     
+    # 准备数据加载器和分词器
+    train_loader, tokenizer = prepare_dataloader(config)
+    
     # 初始化模型
-    model = initialize_model(config)
+    model = initialize_model(config, tokenizer)
     
     # 获取损失函数
     loss_fn = get_loss_fn(config)
     
-    # 准备数据加载器
-    train_loader = create_dataloader(config)
+    # 计算总步数
     total_steps = len(train_loader) * config.num_epochs // config.gradient_accumulation
     
     # 初始化优化器和调度器
@@ -371,6 +425,16 @@ def main():
         
         logging.info(f"Epoch {epoch + 1} 完成: 平均损失 = {avg_loss:.4f}")
         
+        # 对于TransformerMoE，生成一些示例文本
+        if config.model_type == "transformer_moe" and tokenizer:
+            if (epoch + 1) % 2 == 0:  # 每2个epoch生成一次
+                start_text = "今天是"
+                generated_text = generate_text(
+                    model, tokenizer, start_text, 
+                    max_length=50, device=config.device
+                )
+                logging.info(f"生成的文本示例: {generated_text}")
+        
         # 保存检查点
         if avg_loss < best_loss:
             best_loss = avg_loss
@@ -378,13 +442,22 @@ def main():
                 config.output_dir,
                 f"best_model_{config.model_type}.pt"
             )
-            torch.save({
+            
+            # 保存模型和配置
+            model_data = {
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': avg_loss,
                 'config': vars(config)
-            }, save_path)
+            }
+            
+            # 如果有分词器，也保存它
+            if tokenizer:
+                tokenizer.save_vocab(config.vocab_path)
+                model_data['vocab_path'] = config.vocab_path
+            
+            torch.save(model_data, save_path)
             logging.info(f"保存最佳模型到 {save_path}")
         
         # 定期保存检查点
@@ -410,7 +483,8 @@ def main():
     
     torch.save({
         'model_state_dict': model.state_dict(),
-        'config': vars(config)
+        'config': vars(config),
+        'vocab_path': config.vocab_path if tokenizer else None
     }, final_model_path)
     
     logging.info(f"训练完成! 最终模型保存到 {final_model_path}")

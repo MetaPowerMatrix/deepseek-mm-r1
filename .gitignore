@@ -1,0 +1,7 @@
+data/
+*.pdf
+*.pt
+*.json
+*.txt
+*.csv
+*.jsonl
