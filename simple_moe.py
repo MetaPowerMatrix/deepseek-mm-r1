@@ -339,4 +339,4 @@ if __name__ == "__main__":
     print("\n模型规模总结:")
     print(f"小型SimpleMoE: {count_parameters(model):.2f}M 参数")
     print(f"大型SimpleMoE: {count_parameters(large_model):.2f}M 参数")
-    print(f"大型TransformerMoE: {count_parameters(transformer_moe):.2f}M 参数") 
+    print(f"大型TransformerMoE: {count_parameters(transformer_moe):.2f}M 参数")

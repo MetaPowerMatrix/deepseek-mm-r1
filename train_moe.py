@@ -20,6 +20,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 import numpy as np
+import argparse
 
 # 导入MoE模型和数据集
 from simple_moe import SimpleMoE, TransformerMoE, count_parameters
@@ -69,6 +70,8 @@ class TrainingConfig:
     
     # 数据设置
     text_file = None  # 原始文本文件，如果提供，则从该文件创建数据集
+    jsonl_file = "./data/distill_r1_110k_sft.jsonl"  # 原始JSONL文件，如果提供，则从该文件创建数据集
+    jsonl_sample_limit = 5000  # 限制处理的JSONL样本数量，None表示不限制
 
 
 # --------------------- 数据加载器封装 ---------------------
@@ -99,19 +102,54 @@ def prepare_dataloader(config):
         config.vocab_size = len(tokenizer.token_to_id)
         logging.info(f"词表大小设置为: {config.vocab_size}")
     
-    # 如果提供了原始文本文件，则从文本创建数据集
-    if config.text_file and os.path.exists(config.text_file):
-        logging.info(f"从文本文件创建数据集: {config.text_file}")
+    # 检查数据集文件是否存在
+    dataset_exists = os.path.exists(config.dataset_path)
+    
+    # 如果提供了JSONL文件，且数据集不存在或JSONL文件比数据集更新，则从JSONL创建数据集
+    if config.jsonl_file and os.path.exists(config.jsonl_file):
+        create_from_jsonl = False
         
-        if config.model_type == "transformer_moe":
-            MoEDataset.create_from_text(
-                file_path=config.text_file,
-                output_path=config.dataset_path,
-                tokenizer=tokenizer,
-                block_size=config.max_seq_length
-            )
-        else:
-            logging.warning("仅TransformerMoE模型支持从文本创建数据集")
+        if not dataset_exists:
+            logging.info(f"数据集不存在，将从JSONL文件创建: {config.jsonl_file}")
+            create_from_jsonl = True
+        elif os.path.getmtime(config.jsonl_file) > os.path.getmtime(config.dataset_path):
+            logging.info(f"JSONL文件比数据集更新，将重新创建数据集: {config.jsonl_file}")
+            create_from_jsonl = True
+        
+        if create_from_jsonl:
+            if config.model_type == "transformer_moe":
+                logging.info(f"从JSONL文件创建TransformerMoE数据集: {config.jsonl_file}")
+                MoEDataset.create_from_jsonl(
+                    jsonl_path=config.jsonl_file,
+                    output_path=config.dataset_path,
+                    tokenizer=tokenizer,
+                    max_seq_length=config.max_seq_length,
+                    limit=config.jsonl_sample_limit
+                )
+            else:
+                logging.warning("仅TransformerMoE模型支持从JSONL创建数据集")
+    # 如果提供了原始文本文件，且数据集不存在或文本文件比数据集更新，则从文本创建数据集
+    elif config.text_file and os.path.exists(config.text_file):
+        create_from_text = False
+        
+        if not dataset_exists:
+            logging.info(f"数据集不存在，将从文本文件创建: {config.text_file}")
+            create_from_text = True
+        elif os.path.getmtime(config.text_file) > os.path.getmtime(config.dataset_path):
+            logging.info(f"文本文件比数据集更新，将重新创建数据集: {config.text_file}")
+            create_from_text = True
+        
+        if create_from_text:
+            if config.model_type == "transformer_moe":
+                logging.info(f"从文本文件创建TransformerMoE数据集: {config.text_file}")
+                MoEDataset.create_from_text(
+                    file_path=config.text_file,
+                    output_path=config.dataset_path,
+                    tokenizer=tokenizer,
+                    block_size=config.max_seq_length
+                )
+            else:
+                logging.warning("仅TransformerMoE模型支持从文本创建数据集")
     
     # 创建数据集
     dataset = MoEDataset(
@@ -494,4 +532,55 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    parser = argparse.ArgumentParser(description="训练MoE模型")
+    parser.add_argument("--process-jsonl", action="store_true", help="仅处理JSONL文件，不训练模型")
+    parser.add_argument("--limit", type=int, default=5000, help="处理JSONL文件的样本数限制")
+    parser.add_argument("--train", action="store_true", help="训练模型")
+    args = parser.parse_args()
+    
+    # 设置日志
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+    
+    # 同时输出到控制台
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(console_handler)
+    
+    if args.process_jsonl:
+        # 仅处理JSONL文件
+        config = TrainingConfig()
+        config.jsonl_sample_limit = args.limit
+        
+        # 创建分词器
+        if os.path.exists(config.vocab_path):
+            try:
+                tokenizer = Tokenizer.from_file(config.vocab_path)
+                logging.info(f"从{config.vocab_path}加载词表，大小: {len(tokenizer.token_to_id)}")
+            except Exception as e:
+                logging.warning(f"加载词表失败: {str(e)}")
+                tokenizer = Tokenizer.create_default(save_path=config.vocab_path)
+        else:
+            tokenizer = Tokenizer.create_default(save_path=config.vocab_path)
+        
+        # 处理JSONL文件
+        logging.info(f"开始处理JSONL文件: {config.jsonl_file}")
+        logging.info(f"样本限制: {config.jsonl_sample_limit}")
+        
+        count = MoEDataset.create_from_jsonl(
+            jsonl_path=config.jsonl_file,
+            output_path=config.dataset_path,
+            tokenizer=tokenizer,
+            max_seq_length=config.max_seq_length,
+            limit=config.jsonl_sample_limit
+        )
+        
+        logging.info(f"JSONL处理完成，共处理{count}个样本")
+    elif args.train:
+        # 训练模型
+        main()
+    else:
+        # 默认行为，运行main函数
+        main() 

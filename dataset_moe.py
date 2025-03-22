@@ -351,6 +351,121 @@ class MoEDataset(Dataset):
             logging.error(f"创建数据集失败: {str(e)}")
             return 0
 
+    @staticmethod
+    def create_from_jsonl(jsonl_path, output_path, tokenizer=None, max_seq_length=512, limit=None):
+        """
+        从JSONL文件创建TransformerMoE的数据集
+        
+        参数:
+            jsonl_path: JSONL文件路径
+            output_path: 输出数据集路径
+            tokenizer: 分词器，如果为None则创建默认分词器
+            max_seq_length: 最大序列长度
+            limit: 限制处理的样本数量，None表示处理所有样本
+        
+        返回:
+            处理的样本数量
+        """
+        import json
+        from tqdm import tqdm
+        
+        try:
+            # 如果没有提供tokenizer，创建默认的
+            if tokenizer is None:
+                logging.info("未提供tokenizer，尝试加载或创建默认tokenizer")
+                # 首先尝试加载tokenizer.json
+                tokenizer_path = "./data/tokenizer.json"
+                if os.path.exists(tokenizer_path):
+                    try:
+                        tokenizer = Tokenizer.from_file(tokenizer_path)
+                    except Exception as e:
+                        logging.warning(f"从{tokenizer_path}加载词表失败: {str(e)}")
+                        # 创建默认tokenizer
+                        tokenizer = Tokenizer.create_default(save_path=tokenizer_path)
+                else:
+                    # 创建默认tokenizer
+                    tokenizer = Tokenizer.create_default(save_path=tokenizer_path)
+            
+            examples = []
+            line_count = 0
+            
+            # 统计文件行数用于进度条
+            if limit is None:
+                with open(jsonl_path, 'r', encoding='utf-8') as f:
+                    for _ in f:
+                        line_count += 1
+                total_lines = line_count
+            else:
+                total_lines = min(limit, line_count) if line_count > 0 else limit
+            
+            logging.info(f"开始处理JSONL文件: {jsonl_path}")
+            processed_count = 0
+            
+            with open(jsonl_path, 'r', encoding='utf-8') as f:
+                for i, line in tqdm(enumerate(f), total=total_lines, desc="处理JSONL"):
+                    if limit is not None and i >= limit:
+                        break
+                    
+                    try:
+                        data = json.loads(line.strip())
+                        
+                        # 提取文本字段
+                        # 根据观察到的JSONL格式，假设有instruction, input和output字段
+                        instruction = data.get("instruction", "")
+                        input_text = data.get("input", "")
+                        output_text = data.get("output", "")
+                        
+                        # 组合文本，格式: instruction [SEP] input [SEP] output
+                        combined_text = ""
+                        if instruction:
+                            combined_text += instruction
+                        if input_text:
+                            if combined_text:
+                                combined_text += " "
+                            combined_text += input_text
+                        
+                        # 编码文本
+                        input_ids = tokenizer.encode(combined_text, add_special_tokens=True)
+                        target_ids = tokenizer.encode(output_text, add_special_tokens=True)
+                        
+                        # 截断或填充到max_seq_length
+                        if len(input_ids) > max_seq_length:
+                            input_ids = input_ids[:max_seq_length]
+                        else:
+                            # 填充
+                            input_ids = input_ids + [tokenizer.special_tokens["<pad>"]] * (max_seq_length - len(input_ids))
+                            
+                        if len(target_ids) > max_seq_length:
+                            target_ids = target_ids[:max_seq_length]
+                        else:
+                            # 填充
+                            target_ids = target_ids + [tokenizer.special_tokens["<pad>"]] * (max_seq_length - len(target_ids))
+                        
+                        # 转换为tensor
+                        input_tensor = torch.tensor(input_ids, dtype=torch.long)
+                        target_tensor = torch.tensor(target_ids, dtype=torch.long)
+                        
+                        examples.append((input_tensor, target_tensor))
+                        processed_count += 1
+                        
+                    except json.JSONDecodeError:
+                        logging.warning(f"无法解析第{i+1}行JSON: {line[:50]}...")
+                    except Exception as e:
+                        logging.warning(f"处理第{i+1}行时出错: {str(e)}")
+            
+            # 创建输出目录
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            # 保存数据集
+            torch.save(examples, output_path)
+            logging.info(f"从JSONL创建数据集完成: {output_path}, 样本数: {processed_count}")
+            
+            return processed_count
+        
+        except Exception as e:
+            logging.error(f"创建数据集失败: {str(e)}")
+            return 0
+
 
 def create_dataloader(dataset, batch_size=8, num_gpus=1, shuffle=True, num_workers=4):
     """
