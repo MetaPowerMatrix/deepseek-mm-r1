@@ -5,3 +5,11 @@ data/
 *.txt
 *.csv
 *.jsonl
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
