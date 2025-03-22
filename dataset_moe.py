@@ -123,9 +123,26 @@ class Tokenizer:
         with open(vocab_path, 'r', encoding='utf-8') as f:
             vocab_data = json.load(f)
         
-        tokenizer = cls(vocab_size=vocab_data["vocab_size"])
+        # 如果词表中没有vocab_size字段，根据token_to_id的大小估算
+        if "vocab_size" not in vocab_data:
+            vocab_size = max(30000, len(vocab_data.get("token_to_id", {})) * 2)
+            logging.warning(f"词表文件缺少vocab_size字段，使用默认值: {vocab_size}")
+        else:
+            vocab_size = vocab_data["vocab_size"]
+        
+        tokenizer = cls(vocab_size=vocab_size)
+        
+        # 确保token_to_id字段存在
+        if "token_to_id" not in vocab_data:
+            raise ValueError(f"词表文件{vocab_path}格式错误: 缺少token_to_id字段")
+            
         tokenizer.token_to_id = vocab_data["token_to_id"]
-        tokenizer.special_tokens = vocab_data["special_tokens"]
+        
+        # 处理特殊token
+        if "special_tokens" in vocab_data:
+            tokenizer.special_tokens = vocab_data["special_tokens"]
+        else:
+            logging.warning(f"词表文件缺少special_tokens字段，使用默认值")
         
         # 重建id_to_token映射
         tokenizer.id_to_token = {int(id): token for token, id in tokenizer.token_to_id.items()}
