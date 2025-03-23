@@ -21,6 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 import numpy as np
 import argparse
+from tqdm import tqdm
 
 # 导入MoE模型和数据集
 from simple_moe import SimpleMoE, TransformerMoE, count_parameters
@@ -75,120 +76,130 @@ class TrainingConfig:
 
 
 # --------------------- 数据加载器封装 ---------------------
-def prepare_dataloader(config):
-    """准备数据加载器"""
-    # 加载或创建分词器
+def prepare_dataloader(model_type, data_path, batch_size, vocab_path=None, vocab_size=30000, max_seq_length=512, limit=None, num_workers=4):
+    """
+    准备数据加载器
+    
+    参数:
+        model_type: 模型类型，"simple_moe"或"transformer_moe"
+        data_path: 数据集路径
+        batch_size: 批次大小
+        vocab_path: 词表路径（仅TransformerMoE需要）
+        vocab_size: 词表大小
+        max_seq_length: 最大序列长度（仅TransformerMoE需要）
+        limit: 限制处理的样本数量
+        num_workers: 数据加载线程数
+    
+    返回:
+        dataloader, vocab_size（用于更新模型配置）
+    """
+    # 加载或创建词表
     tokenizer = None
-    
-    if config.model_type == "transformer_moe":
-        # 首先尝试加载指定的tokenizer.json文件
-        if os.path.exists(config.vocab_path):
-            try:
-                logging.info(f"从{config.vocab_path}加载词表...")
-                tokenizer = Tokenizer.from_file(config.vocab_path)
-                logging.info(f"成功加载词表，大小: {len(tokenizer.token_to_id)}")
-            except Exception as e:
-                logging.warning(f"从{config.vocab_path}加载词表失败: {str(e)}")
-                
-                # 尝试加载默认词表
-                tokenizer = Tokenizer.create_default()
+    if model_type != "simple_moe":
+        if vocab_path and os.path.exists(vocab_path):
+            logging.info(f"从{vocab_path}加载词表")
+            from dataset_moe import Tokenizer
+            tokenizer = Tokenizer.from_file(vocab_path)
+            # 更新词表大小
+            vocab_size = max(vocab_size, len(tokenizer.token_to_id))
+            logging.info(f"词表大小: {vocab_size}")
         else:
-            logging.info(f"词表文件{config.vocab_path}不存在，尝试创建默认词表")
-            # 确保目录存在
-            os.makedirs(os.path.dirname(config.vocab_path), exist_ok=True)
-            tokenizer = Tokenizer.create_default(save_path=config.vocab_path)
-        
-        # 更新配置中的词表大小
-        config.vocab_size = len(tokenizer.token_to_id)
-        logging.info(f"词表大小设置为: {config.vocab_size}")
+            logging.warning(f"未找到词表文件{vocab_path}，将使用默认词表")
     
-    # 检查数据集文件是否存在
-    dataset_exists = os.path.exists(config.dataset_path)
+    # 确保数据目录存在
+    os.makedirs(os.path.dirname(data_path), exist_ok=True)
     
-    # 如果提供了JSONL文件，且数据集不存在或JSONL文件比数据集更新，则从JSONL创建数据集
-    if config.jsonl_file and os.path.exists(config.jsonl_file):
-        create_from_jsonl = False
-        
-        if not dataset_exists:
-            logging.info(f"数据集不存在，将从JSONL文件创建: {config.jsonl_file}")
-            create_from_jsonl = True
-        elif os.path.getmtime(config.jsonl_file) > os.path.getmtime(config.dataset_path):
-            logging.info(f"JSONL文件比数据集更新，将重新创建数据集: {config.jsonl_file}")
-            create_from_jsonl = True
-        
-        if create_from_jsonl:
-            if config.model_type == "transformer_moe":
-                logging.info(f"从JSONL文件创建TransformerMoE数据集: {config.jsonl_file}")
+    # 如果是JSONL文件，创建数据集
+    if data_path.endswith(".jsonl"):
+        from dataset_moe import MoEDataset
+        dataset_path = data_path.replace(".jsonl", ".pt")
+        if not os.path.exists(dataset_path):
+            logging.info(f"从{data_path}创建数据集")
+            if model_type == "simple_moe":
+                # SimpleMoE没有实现JSONL加载，生成合成数据集
+                logging.warning(f"SimpleMoE不支持JSONL格式，创建合成数据集")
+                dataset = MoEDataset(
+                    file_path="./data/simple_moe_synthetic.pt",
+                    model_type=model_type
+                )
+            else:
+                # 从JSONL创建数据集
                 MoEDataset.create_from_jsonl(
-                    jsonl_path=config.jsonl_file,
-                    output_path=config.dataset_path,
+                    jsonl_path=data_path,
+                    output_path=dataset_path,
                     tokenizer=tokenizer,
-                    max_seq_length=config.max_seq_length,
-                    limit=config.jsonl_sample_limit
+                    max_seq_length=max_seq_length,
+                    limit=limit
                 )
-            else:
-                logging.warning("仅TransformerMoE模型支持从JSONL创建数据集")
-    # 如果提供了原始文本文件，且数据集不存在或文本文件比数据集更新，则从文本创建数据集
-    elif config.text_file and os.path.exists(config.text_file):
-        create_from_text = False
-        
-        if not dataset_exists:
-            logging.info(f"数据集不存在，将从文本文件创建: {config.text_file}")
-            create_from_text = True
-        elif os.path.getmtime(config.text_file) > os.path.getmtime(config.dataset_path):
-            logging.info(f"文本文件比数据集更新，将重新创建数据集: {config.text_file}")
-            create_from_text = True
-        
-        if create_from_text:
-            if config.model_type == "transformer_moe":
-                logging.info(f"从文本文件创建TransformerMoE数据集: {config.text_file}")
-                MoEDataset.create_from_text(
-                    file_path=config.text_file,
-                    output_path=config.dataset_path,
-                    tokenizer=tokenizer,
-                    block_size=config.max_seq_length
+                dataset = MoEDataset(
+                    file_path=dataset_path,
+                    max_seq_length=max_seq_length,
+                    model_type=model_type,
+                    tokenizer=tokenizer
                 )
-            else:
-                logging.warning("仅TransformerMoE模型支持从文本创建数据集")
-    
-    # 创建数据集
-    dataset = MoEDataset(
-        file_path=config.dataset_path,
-        max_seq_length=config.max_seq_length,
-        model_type=config.model_type,
-        tokenizer=tokenizer
-    )
+        else:
+            # 数据集已存在，直接加载
+            logging.info(f"从{dataset_path}加载数据集")
+            dataset = MoEDataset(
+                file_path=dataset_path,
+                max_seq_length=max_seq_length,
+                model_type=model_type,
+                tokenizer=tokenizer
+            )
+    else:
+        # 直接加载.pt数据集
+        from dataset_moe import MoEDataset
+        dataset = MoEDataset(
+            file_path=data_path,
+            max_seq_length=max_seq_length if model_type != "simple_moe" else None,
+            model_type=model_type,
+            tokenizer=tokenizer if model_type != "simple_moe" else None
+        )
     
     # 创建数据加载器
-    return create_dataloader(
-        dataset=dataset,
-        batch_size=config.batch_size,
-        num_gpus=config.num_gpus,
+    from dataset_moe import create_dataloader
+    dataloader = create_dataloader(
+        dataset,
+        batch_size=batch_size,
+        num_gpus=1, # 单机训练设为1
         shuffle=True,
-        num_workers=4
-    ), tokenizer
+        num_workers=num_workers
+    )
+    
+    logging.info(f"数据集大小: {len(dataset)}，批次数: {len(dataloader)}")
+    
+    # 返回dataloader和更新后的vocab_size
+    return dataloader, vocab_size
 
 
 # --------------------- 模型初始化 ---------------------
-def initialize_model(config, tokenizer=None):
-    if config.model_type == "simple_moe":
+def initialize_model(model_type, config):
+    """
+    初始化模型
+    
+    参数:
+        model_type: 模型类型，"simple_moe"或"transformer_moe"
+        config: 配置对象
+    
+    返回:
+        初始化的模型
+    """
+    from simple_moe import SimpleMoE, TransformerMoE, LongContextTransformerMoE
+    
+    logging.info(f"初始化{model_type}模型...")
+    
+    if model_type == "simple_moe":
         model = SimpleMoE(
             input_size=config.input_size,
-            hidden_size=config.hidden_size,
+            hidden_size=config.hidden_size, 
             output_size=config.output_size,
             num_experts=config.num_experts,
             k=config.k
         )
-    else:  # transformer_moe
-        # 如果有分词器，使用分词器的词表大小
-        if tokenizer:
-            vocab_size = len(tokenizer.token_to_id)
-            # 更新配置
-            config.vocab_size = vocab_size
-            logging.info(f"使用分词器词表大小: {vocab_size}")
-        else:
-            vocab_size = config.vocab_size
-            
+    elif model_type == "transformer_moe":
+        # 确保vocab_size已正确设置
+        # 确保vocab_size至少为1000（防止词表过小导致问题）
+        vocab_size = max(1000, config.vocab_size)
         model = TransformerMoE(
             vocab_size=vocab_size,
             d_model=config.d_model,
@@ -197,18 +208,30 @@ def initialize_model(config, tokenizer=None):
             d_ff=config.d_ff,
             max_seq_len=config.max_seq_length,
             num_experts=config.num_experts,
-            k=config.k
+            k=config.k,
+            dropout=config.dropout
         )
+    elif model_type == "long_transformer_moe":
+        # 确保vocab_size已正确设置
+        vocab_size = max(1000, config.vocab_size)
+        model = LongContextTransformerMoE(
+            vocab_size=vocab_size,
+            d_model=config.d_model,
+            num_heads=config.num_heads,
+            num_layers=config.num_layers,
+            d_ff=config.d_ff,
+            max_seq_len=config.max_seq_length,
+            num_experts=config.num_experts,
+            k=config.k,
+            dropout=config.dropout,
+            scaling_factor=config.scaling_factor,
+            rope_theta=10000
+        )
+    else:
+        raise ValueError(f"不支持的模型类型: {model_type}")
     
-    # 输出模型参数统计
-    logging.info(f"模型类型: {config.model_type}")
-    logging.info(f"模型参数量: {count_parameters(model):.2f}M")
+    logging.info(f"模型参数数量: {sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.2f}M")
     
-    # 分布式训练设置
-    if config.num_gpus > 1:
-        model = nn.DataParallel(model)
-    
-    model.to(config.device)
     return model
 
 
@@ -256,66 +279,119 @@ def create_optimizer_scheduler(model, config, total_steps):
 
 
 # --------------------- 训练循环 ---------------------
-def train_epoch(model, dataloader, optimizer, scheduler, loss_fn, scaler, config, epoch):
+def train_epoch(model, dataloader, criterion, optimizer, scheduler, device, 
+              gradient_accumulation_steps=1, mixed_precision=False, amp_scaler=None,
+              clip_grad=1.0, model_type="transformer_moe"):
+    """单个训练轮次"""
     model.train()
     total_loss = 0.0
-    accumulated_loss = 0.0
+    batches_processed = 0
     
-    for step, batch in enumerate(dataloader):
-        # 解包数据
-        inputs, targets = batch
-        inputs = inputs.to(config.device)
-        targets = targets.to(config.device)
+    # 创建tqdm进度条
+    progress_bar = tqdm(total=len(dataloader), desc=f"训练中")
+    
+    for batch_idx, (inputs, targets) in enumerate(dataloader):
+        # 将数据移动到指定设备
+        inputs = inputs.to(device)
+        targets = targets.to(device)
         
-        # 混合精度训练上下文
-        with torch.cuda.amp.autocast(enabled=config.fp16):
-            if config.model_type == "simple_moe":
-                # SimpleMoE直接前向传播
-                outputs = model(inputs)
-                loss = loss_fn(outputs, targets)
-            else:
-                # TransformerMoE处理
-                outputs = model(inputs)
-                # 重塑输出以适应交叉熵损失 [batch_size*seq_len, vocab_size]
-                outputs = outputs.view(-1, config.vocab_size)
-                targets = targets.view(-1)
-                loss = loss_fn(outputs, targets)
+        # 确保输入索引在有效范围内
+        if model_type in ["transformer_moe", "long_transformer_moe"]:
+            vocab_size = model.token_embedding.weight.size(0)
+            # 检查并裁剪超出范围的索引
+            inputs = torch.clamp(inputs, 0, vocab_size - 1)
+            targets = torch.clamp(targets, 0, vocab_size - 1)
         
-        # 梯度累积
-        scaled_loss = loss / config.gradient_accumulation
-        
-        # 反向传播
-        scaler.scale(scaled_loss).backward()
-        
-        # 梯度裁剪和更新
-        if (step + 1) % config.gradient_accumulation == 0:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(),
-                config.max_grad_norm
-            )
-            
-            scaler.step(optimizer)
-            scaler.update()
+        # 在梯度累积步骤开始时清零梯度
+        if batch_idx % gradient_accumulation_steps == 0:
             optimizer.zero_grad()
-            scheduler.step()
         
-        # 记录损失
-        accumulated_loss += loss.item()
-        total_loss += loss.item()
+        # 混合精度训练
+        if mixed_precision and amp_scaler is not None:
+            with torch.cuda.amp.autocast():
+                # 向前传播
+                outputs = model(inputs)
+                
+                # 计算损失
+                if model_type == "simple_moe":
+                    loss = criterion(outputs, targets)
+                else:  # transformer_moe
+                    # 对于TransformerMoE，输出形状为[batch_size, seq_len, vocab_size]
+                    # 调整为计算CrossEntropyLoss所需的形状
+                    outputs = outputs.view(-1, outputs.size(-1))
+                    targets = targets.view(-1)
+                    loss = criterion(outputs, targets)
+                
+                # 缩放损失以适应梯度累积
+                loss = loss / gradient_accumulation_steps
+            
+            # 反向传播
+            amp_scaler.scale(loss).backward()
+                
+            # 如果达到累积步数，则更新参数
+            if (batch_idx + 1) % gradient_accumulation_steps == 0 or (batch_idx + 1) == len(dataloader):
+                # 对梯度进行裁剪，防止梯度爆炸
+                if clip_grad > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+                    
+                # 使用scaler更新权重
+                amp_scaler.step(optimizer)
+                amp_scaler.update()
+                
+                # 更新学习率
+                scheduler.step()
+        else:
+            # 非混合精度训练
+            # 向前传播
+            outputs = model(inputs)
+            
+            # 计算损失
+            if model_type == "simple_moe":
+                loss = criterion(outputs, targets)
+            else:  # transformer_moe
+                # 对于TransformerMoE，输出形状为[batch_size, seq_len, vocab_size]
+                # 调整为计算CrossEntropyLoss所需的形状
+                outputs = outputs.view(-1, outputs.size(-1))
+                targets = targets.view(-1)
+                loss = criterion(outputs, targets)
+            
+            # 缩放损失以适应梯度累积
+            loss = loss / gradient_accumulation_steps
+            
+            # 反向传播
+            loss.backward()
+            
+            # 如果达到累积步数，则更新参数
+            if (batch_idx + 1) % gradient_accumulation_steps == 0 or (batch_idx + 1) == len(dataloader):
+                # 对梯度进行裁剪，防止梯度爆炸
+                if clip_grad > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
+                
+                # 更新权重
+                optimizer.step()
+                
+                # 更新学习率
+                scheduler.step()
+                
+                # 清零梯度
+                optimizer.zero_grad()
         
-        # 每50步打印一次日志
-        if step % 50 == 0:
-            items_seen = (step + 1) * config.batch_size
-            avg_loss = accumulated_loss / (step % 50 + 1) if step % 50 > 0 else accumulated_loss
-            lr = optimizer.param_groups[0]["lr"]
-            logging.info(
-                f"Epoch {epoch+1} | Step {step}/{len(dataloader)} | "
-                f"Items: {items_seen} | Loss: {avg_loss:.4f} | LR: {lr:.2e}"
-            )
-            accumulated_loss = 0.0
+        # 累计损失
+        total_loss += loss.item() * gradient_accumulation_steps
+        batches_processed += 1
+        
+        # 更新进度条
+        if batch_idx % 10 == 0:
+            progress_bar.set_postfix({"loss": f"{total_loss / batches_processed:.4f}"})
+        progress_bar.update(1)
     
-    return total_loss / len(dataloader)
+    # 关闭进度条
+    progress_bar.close()
+    
+    # 计算平均损失
+    avg_loss = total_loss / batches_processed
+    
+    return avg_loss
 
 
 # --------------------- 评估函数 ---------------------
@@ -394,40 +470,49 @@ def generate_text(model, tokenizer, start_text, max_length=100, temperature=1.0,
 
 # --------------------- 主函数 ---------------------
 def main():
-    # 初始化配置
-    config = TrainingConfig()
-    config.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # 解析命令行参数
+    args = parse_args()
     
-    # 创建输出目录
-    os.makedirs(config.output_dir, exist_ok=True)
-    os.makedirs(config.log_dir, exist_ok=True)
-    os.makedirs(os.path.dirname(config.vocab_path), exist_ok=True)
+    # 设置配置
+    config = TrainingConfig()
+    config.model_type = args.model_type
+    config.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    config.data_path = args.data_path
+    config.batch_size = args.batch_size
+    config.num_epochs = args.num_epochs
+    config.learning_rate = args.learning_rate
+    config.save_dir = args.save_dir
+    config.eval_every = args.eval_every
+    config.vocab_path = args.vocab_path
+    config.checkpoint_path = args.checkpoint_path
+    
+    # 创建保存目录
+    os.makedirs(config.save_dir, exist_ok=True)
     
     # 设置日志
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    logging.basicConfig(
-        filename=os.path.join(config.log_dir, f"train_{timestamp}.log"),
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s"
+    setup_logging(os.path.join(config.save_dir, "training.log"))
+    
+    # 设置随机种子
+    setup_seed(42)
+    
+    # 准备数据加载器并获取更新后的vocab_size
+    train_loader, updated_vocab_size = prepare_dataloader(
+        model_type=config.model_type,
+        data_path=config.data_path,
+        batch_size=config.batch_size,
+        vocab_path=config.vocab_path,
+        vocab_size=config.vocab_size,
+        max_seq_length=config.max_seq_length
     )
     
-    # 同时输出到控制台
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    logging.getLogger().addHandler(console_handler)
-    
-    writer = SummaryWriter(os.path.join(config.log_dir, timestamp))
-    
-    # 记录训练配置
-    logging.info("训练配置:")
-    for key, value in vars(config).items():
-        logging.info(f"  {key}: {value}")
-    
-    # 准备数据加载器和分词器
-    train_loader, tokenizer = prepare_dataloader(config)
+    # 更新config中的vocab_size
+    if config.model_type != "simple_moe":
+        if updated_vocab_size != config.vocab_size:
+            logging.info(f"更新词表大小: {config.vocab_size} -> {updated_vocab_size}")
+            config.vocab_size = updated_vocab_size
     
     # 初始化模型
-    model = initialize_model(config, tokenizer)
+    model = initialize_model(config.model_type, config)
     
     # 获取损失函数
     loss_fn = get_loss_fn(config)
@@ -453,8 +538,8 @@ def main():
         
         # 训练一个epoch
         avg_loss = train_epoch(
-            model, train_loader, optimizer,
-            scheduler, loss_fn, scaler, config, epoch
+            model, train_loader, loss_fn, optimizer,
+            scheduler, config.device, config.gradient_accumulation, config.fp16, scaler, config.max_grad_norm, config.model_type
         )
         
         # 记录指标

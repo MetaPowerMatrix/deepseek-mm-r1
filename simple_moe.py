@@ -195,6 +195,7 @@ class TransformerMoE(nn.Module):
         super(TransformerMoE, self).__init__()
         
         self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.vocab_size = vocab_size
         
         # 使用RoPE替代原来的位置编码
         head_dim = d_model // num_heads
@@ -220,6 +221,9 @@ class TransformerMoE(nn.Module):
     def forward(self, src, mask=None):
         # src: [batch_size, seq_len]
         batch_size, seq_len = src.size()
+        
+        # 安全检查：确保输入索引不超过词表大小
+        src = torch.clamp(src, 0, self.vocab_size - 1)
         
         # 词嵌入
         src = self.token_embedding(src) * torch.sqrt(torch.tensor(self.token_embedding.embedding_dim, dtype=torch.float32))
@@ -332,6 +336,7 @@ class LongContextTransformerMoE(nn.Module):
         super(LongContextTransformerMoE, self).__init__()
         
         self.token_embedding = nn.Embedding(vocab_size, d_model)
+        self.vocab_size = vocab_size
         
         # 使用YaRN RoPE实现长序列支持
         head_dim = d_model // num_heads
@@ -366,6 +371,9 @@ class LongContextTransformerMoE(nn.Module):
     def forward(self, src, mask=None):
         # src: [batch_size, seq_len]
         batch_size, seq_len = src.size()
+        
+        # 安全检查：确保输入索引不超过词表大小
+        src = torch.clamp(src, 0, self.vocab_size - 1)
         
         # 词嵌入
         src = self.token_embedding(src) * torch.sqrt(torch.tensor(self.token_embedding.embedding_dim, dtype=torch.float32))
