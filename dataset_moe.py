@@ -32,6 +32,7 @@ class Tokenizer:
             self.id_to_token[idx] = token
         
         self.vocab_initialized = False
+        self.unk_token_id = self.special_tokens["<unk>"]  # 添加直接引用
         
     def build_vocab(self, texts, min_freq=2):
         """
@@ -71,8 +72,19 @@ class Tokenizer:
     
     def encode(self, text, add_special_tokens=False):
         """将文本转换为ID序列"""
-        if not self.vocab_initialized:
-            raise ValueError("词表尚未初始化，请先调用build_vocab方法")
+        if not self.vocab_initialized and len(self.token_to_id) <= len(self.special_tokens):
+            # 如果词表未初始化，但仍然尝试encode，使用简单的字符编码
+            logging.warning("词表未完全初始化，使用简单字符编码")
+            tokens = self._tokenize(text)
+            
+            # 确保特殊字符已在词表中，如果不在，则添加
+            for char in tokens:
+                if char not in self.token_to_id:
+                    next_id = len(self.token_to_id)
+                    self.token_to_id[char] = next_id
+                    self.id_to_token[next_id] = char
+            
+            self.vocab_initialized = True
         
         tokens = self._tokenize(text)
         
@@ -80,19 +92,22 @@ class Tokenizer:
             tokens = ["<bos>"] + tokens + ["<eos>"]
         
         # 将词转换为ID，对于未知词使用<unk>的ID
-        ids = [self.token_to_id.get(token, self.special_tokens["<unk>"]) 
-               for token in tokens]
+        # 先检查special_tokens字典中是否有<unk>，如果没有则使用默认值1
+        unk_id = self.unk_token_id
+        ids = [self.token_to_id.get(token, unk_id) for token in tokens]
         
         return ids
     
     def decode(self, ids, skip_special_tokens=True):
         """将ID序列转换为文本"""
-        if not self.vocab_initialized:
-            raise ValueError("词表尚未初始化，请先调用build_vocab方法")
+        # 确保id_to_token字典已初始化
+        if not self.vocab_initialized and len(self.id_to_token) <= len(self.special_tokens):
+            logging.warning("词表未完全初始化，解码结果可能不准确")
         
         # 过滤特殊词
         if skip_special_tokens:
-            ids = [idx for idx in ids if idx not in self.special_tokens.values()]
+            special_ids = list(self.special_tokens.values())
+            ids = [idx for idx in ids if idx not in special_ids]
         
         # 将ID转换为词
         tokens = [self.id_to_token.get(idx, "<unk>") for idx in ids]
@@ -152,45 +167,50 @@ class Tokenizer:
                     vocab_data = {
                         "token_to_id": token_to_id,
                         "vocab_size": vocab_size,
-                        "special_tokens": special_tokens
+                        "special_tokens": special_tokens or {
+                            "<pad>": 0,
+                            "<unk>": 1,
+                            "<bos>": 2,
+                            "<eos>": 3,
+                        }
                     }
                 else:
-                    # 如果不是DeepSeek格式，也不是我们的标准格式，抛出错误
-                    raise ValueError(f"词表文件{vocab_path}格式无法识别")
+                    raise ValueError("不支持的词表格式")
             
-            # 处理标准格式
-            # 如果词表中没有vocab_size字段，根据token_to_id的大小估算
-            if "vocab_size" not in vocab_data:
-                vocab_size = max(30000, len(vocab_data.get("token_to_id", {})) * 2)
-                logging.warning(f"词表文件缺少vocab_size字段，使用默认值: {vocab_size}")
-            else:
-                vocab_size = vocab_data["vocab_size"]
-            
-            tokenizer = cls(vocab_size=vocab_size)
-            
-            # 确保token_to_id字段存在
-            if "token_to_id" not in vocab_data:
-                raise ValueError(f"词表文件{vocab_path}格式错误: 缺少token_to_id字段")
-                
+            # 创建实例
+            tokenizer = cls(vocab_data.get("vocab_size", 30000))
             tokenizer.token_to_id = vocab_data["token_to_id"]
             
-            # 处理特殊token
+            # 确保特殊token存在
             if "special_tokens" in vocab_data:
                 tokenizer.special_tokens = vocab_data["special_tokens"]
-            else:
-                logging.warning(f"词表文件缺少special_tokens字段，使用默认值")
             
-            # 重建id_to_token映射
-            tokenizer.id_to_token = {int(id): token for token, id in tokenizer.token_to_id.items()}
-            tokenizer.vocab_initialized = True
+            # 确保特殊token中有必要的key
+            for special_token in ["<pad>", "<unk>", "<bos>", "<eos>"]:
+                if special_token not in tokenizer.special_tokens:
+                    # 如果特殊token不在字典中，查找token_to_id中是否有对应值
+                    if special_token in tokenizer.token_to_id:
+                        tokenizer.special_tokens[special_token] = tokenizer.token_to_id[special_token]
+                    else:
+                        # 分配一个新ID
+                        new_id = max(tokenizer.token_to_id.values()) + 1 if tokenizer.token_to_id else 1000 + len(tokenizer.special_tokens)
+                        tokenizer.token_to_id[special_token] = new_id
+                        tokenizer.special_tokens[special_token] = new_id
+            
+            # 设置unk_token_id
+            tokenizer.unk_token_id = tokenizer.special_tokens["<unk>"] 
+            
+            # 反向生成id_to_token
+            tokenizer.id_to_token = {v: k for k, v in tokenizer.token_to_id.items()}
+            
+            tokenizer.vocab_initialized = len(tokenizer.token_to_id) > len(tokenizer.special_tokens)
             
             logging.info(f"从{vocab_path}加载词表，大小: {len(tokenizer.token_to_id)}")
             return tokenizer
             
         except Exception as e:
-            logging.error(f"从{vocab_path}加载词表失败: {str(e)}")
-            # 创建一个默认的tokenizer作为后备方案
-            logging.info("创建默认词表作为后备方案")
+            logging.error(f"加载词表失败: {str(e)}")
+            # 返回默认分词器
             return cls.create_default()
     
     @classmethod
@@ -445,6 +465,10 @@ class MoEDataset(Dataset):
                     # 创建默认tokenizer
                     tokenizer = Tokenizer.create_default(save_path=tokenizer_path)
             
+            # 确保tokenizer正确设置
+            if not hasattr(tokenizer, 'unk_token_id') or tokenizer.unk_token_id is None:
+                tokenizer.unk_token_id = tokenizer.special_tokens.get("<unk>", 1)
+            
             examples = []
             line_count = 0
             
@@ -483,22 +507,48 @@ class MoEDataset(Dataset):
                                 combined_text += " "
                             combined_text += input_text
                         
-                        # 编码文本
-                        input_ids = tokenizer.encode(combined_text, add_special_tokens=True)
-                        target_ids = tokenizer.encode(output_text, add_special_tokens=True)
+                        # 编码文本时使用安全的方式
+                        try:
+                            input_ids = tokenizer.encode(combined_text, add_special_tokens=True)
+                            target_ids = tokenizer.encode(output_text, add_special_tokens=True)
+                        except Exception as e:
+                            logging.warning(f"编码第{i+1}行时出错: {str(e)}")
+                            # 使用简单的字符级编码
+                            input_ids = []
+                            pad_id = tokenizer.special_tokens.get("<pad>", 0)
+                            unk_id = tokenizer.unk_token_id
+                            bos_id = tokenizer.special_tokens.get("<bos>", 2)
+                            eos_id = tokenizer.special_tokens.get("<eos>", 3)
+                            
+                            input_ids = [bos_id]
+                            for char in combined_text:
+                                if char in tokenizer.token_to_id:
+                                    input_ids.append(tokenizer.token_to_id[char])
+                                else:
+                                    input_ids.append(unk_id)
+                            input_ids.append(eos_id)
+                            
+                            target_ids = [bos_id]
+                            for char in output_text:
+                                if char in tokenizer.token_to_id:
+                                    target_ids.append(tokenizer.token_to_id[char])
+                                else:
+                                    target_ids.append(unk_id)
+                            target_ids.append(eos_id)
                         
                         # 截断或填充到max_seq_length
+                        pad_id = tokenizer.special_tokens.get("<pad>", 0)
                         if len(input_ids) > max_seq_length:
                             input_ids = input_ids[:max_seq_length]
                         else:
                             # 填充
-                            input_ids = input_ids + [tokenizer.special_tokens["<pad>"]] * (max_seq_length - len(input_ids))
+                            input_ids = input_ids + [pad_id] * (max_seq_length - len(input_ids))
                             
                         if len(target_ids) > max_seq_length:
                             target_ids = target_ids[:max_seq_length]
                         else:
                             # 填充
-                            target_ids = target_ids + [tokenizer.special_tokens["<pad>"]] * (max_seq_length - len(target_ids))
+                            target_ids = target_ids + [pad_id] * (max_seq_length - len(target_ids))
                         
                         # 转换为tensor
                         input_tensor = torch.tensor(input_ids, dtype=torch.long)
@@ -511,6 +561,7 @@ class MoEDataset(Dataset):
                         logging.warning(f"无法解析第{i+1}行JSON: {line[:50]}...")
                     except Exception as e:
                         logging.warning(f"处理第{i+1}行时出错: {str(e)}")
+                        continue
             
             # 创建输出目录
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
