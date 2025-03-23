@@ -187,6 +187,7 @@ def initialize_model(model_type, config):
     from simple_moe import SimpleMoE, TransformerMoE, LongContextTransformerMoE
     
     logging.info(f"初始化{model_type}模型...")
+    model = None
     
     if model_type == "simple_moe":
         model = SimpleMoE(
@@ -230,7 +231,11 @@ def initialize_model(model_type, config):
     else:
         raise ValueError(f"不支持的模型类型: {model_type}")
     
-    logging.info(f"模型参数数量: {sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.2f}M")
+    if model is not None:
+        # 将模型移动到指定设备
+        device = getattr(config, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        model = model.to(device)
+        logging.info(f"模型参数数量: {sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.2f}M")
     
     return model
 
@@ -239,10 +244,10 @@ def initialize_model(model_type, config):
 def get_loss_fn(config):
     if config.model_type == "simple_moe":
         # 回归任务使用MSE损失
-        return nn.MSELoss()
+        return nn.MSELoss().to(config.device)
     else:
         # 语言模型使用交叉熵损失
-        return nn.CrossEntropyLoss()
+        return nn.CrossEntropyLoss().to(config.device)
 
 
 # --------------------- 优化器与调度器 ---------------------
@@ -284,6 +289,8 @@ def train_epoch(model, dataloader, criterion, optimizer, scheduler, device,
               clip_grad=1.0, model_type="transformer_moe"):
     """单个训练轮次"""
     model.train()
+    # 确保模型在正确的设备上
+    model = model.to(device)
     total_loss = 0.0
     batches_processed = 0
     
@@ -658,7 +665,15 @@ def main():
     optimizer, scheduler = create_optimizer_scheduler(model, config, total_steps)
     
     # 混合精度梯度缩放器
-    scaler = torch.cuda.amp.GradScaler(enabled=config.fp16)
+    # 仅在CUDA可用时启用混合精度
+    if torch.cuda.is_available():
+        config.fp16 = config.fp16  # 保持现有设置
+        scaler = torch.cuda.amp.GradScaler(enabled=config.fp16)
+        logging.info(f"混合精度训练: {'启用' if config.fp16 else '禁用'}")
+    else:
+        config.fp16 = False  # 在CPU上禁用混合精度
+        scaler = torch.cuda.amp.GradScaler(enabled=False)
+        logging.info("在CPU上运行，已禁用混合精度训练")
     
     # 训练循环
     logging.info(f"开始训练 {config.model_type} 模型...")

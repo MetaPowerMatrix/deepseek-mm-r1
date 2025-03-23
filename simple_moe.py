@@ -116,7 +116,7 @@ class MultiHeadAttention(nn.Module):
         q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids)
         
         # 计算注意力分数 [batch_size, num_heads, q_len, k_len]
-        scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
+        scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32, device=q.device))
         
         # 应用掩码（如果提供）
         if mask is not None:
@@ -226,7 +226,10 @@ class TransformerMoE(nn.Module):
         src = torch.clamp(src, 0, self.vocab_size - 1)
         
         # 词嵌入
-        src = self.token_embedding(src) * torch.sqrt(torch.tensor(self.token_embedding.embedding_dim, dtype=torch.float32))
+        embedding_dim_tensor = torch.tensor(self.token_embedding.embedding_dim, 
+                                           dtype=torch.float32, 
+                                           device=src.device)
+        src = self.token_embedding(src) * torch.sqrt(embedding_dim_tensor)
         src = self.dropout(src)
         
         # 通过编码器层
@@ -376,7 +379,10 @@ class LongContextTransformerMoE(nn.Module):
         src = torch.clamp(src, 0, self.vocab_size - 1)
         
         # 词嵌入
-        src = self.token_embedding(src) * torch.sqrt(torch.tensor(self.token_embedding.embedding_dim, dtype=torch.float32))
+        embedding_dim_tensor = torch.tensor(self.token_embedding.embedding_dim, 
+                                           dtype=torch.float32, 
+                                           device=src.device)
+        src = self.token_embedding(src) * torch.sqrt(embedding_dim_tensor)
         src = self.dropout(src)
         
         # 通过编码器层
@@ -435,17 +441,15 @@ class LongContextMultiHeadAttention(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
         
-        # 应用旋转位置编码（RoPE）
+        # 应用旋转位置编码
         if rotary_emb is not None:
             seq_len = q.size(2)
             position_ids = torch.arange(seq_len, device=q.device).unsqueeze(0)
-            
-            # 生成旋转编码
             cos, sin = rotary_emb(q, seq_len=seq_len)
             q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids)
         
         # 计算注意力分数 [batch_size, num_heads, q_len, k_len]
-        scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
+        scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32, device=q.device))
         
         # 应用掩码（如果提供）
         if mask is not None:
