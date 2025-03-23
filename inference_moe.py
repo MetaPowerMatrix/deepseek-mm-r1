@@ -151,8 +151,33 @@ def load_model(config):
         
         # 加载预训练权重（如果存在）
         if os.path.exists(config.model_path):
-            model.load_state_dict(torch.load(config.model_path, map_location=config.device))
-            logging.info(f"从{config.model_path}加载模型权重")
+            # 加载checkpoint
+            checkpoint = torch.load(config.model_path, map_location=config.device)
+            
+            # 检查checkpoint中是否包含模型状态字典
+            if "model_state_dict" in checkpoint:
+                # checkpoint包含完整训练状态
+                model.load_state_dict(checkpoint["model_state_dict"])
+                logging.info(f"从{config.model_path}加载模型权重 (从checkpoint)")
+                
+                # 如果checkpoint中包含词表路径，可以更新配置
+                if "vocab_path" in checkpoint and not os.path.exists(config.vocab_path):
+                    saved_vocab_path = checkpoint["vocab_path"]
+                    if os.path.exists(saved_vocab_path):
+                        config.vocab_path = saved_vocab_path
+                        logging.info(f"使用checkpoint中记录的词表路径: {saved_vocab_path}")
+                
+                # 如果checkpoint中包含配置信息，可以更新模型配置
+                if "config" in checkpoint:
+                    saved_config = checkpoint["config"]
+                    for key, value in saved_config.items():
+                        if hasattr(config, key):
+                            setattr(config, key, value)
+                    logging.info("从checkpoint更新模型配置")
+            else:
+                # 直接加载模型状态字典
+                model.load_state_dict(checkpoint)
+                logging.info(f"从{config.model_path}加载模型权重")
         else:
             logging.warning(f"找不到模型权重文件: {config.model_path}，使用随机初始化")
         
