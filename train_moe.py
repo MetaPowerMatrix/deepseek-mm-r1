@@ -468,8 +468,103 @@ def generate_text(model, tokenizer, start_text, max_length=100, temperature=1.0,
     return output_text
 
 
+# --------------------- 辅助函数 ---------------------
+def setup_logging(log_file=None):
+    """设置日志"""
+    log_level = logging.INFO
+    log_format = "%(asctime)s - %(levelname)s - %(message)s"
+    
+    # 设置根日志
+    logging.basicConfig(
+        level=log_level,
+        format=log_format,
+        handlers=[logging.StreamHandler()]
+    )
+    
+    # 如果提供了日志文件，添加文件处理器
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(logging.Formatter(log_format))
+        logging.getLogger().addHandler(file_handler)
+
+
+def setup_seed(seed):
+    """设置随机种子"""
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description="训练MoE模型")
+    
+    # 模型与训练设置
+    parser.add_argument("--model_type", type=str, default="transformer_moe", 
+                        choices=["simple_moe", "transformer_moe", "long_transformer_moe"],
+                        help="模型类型: simple_moe, transformer_moe, long_transformer_moe")
+    parser.add_argument("--data_path", type=str, default="./data/distill_r1_110k_sft.jsonl",
+                        help="训练数据路径（.pt文件或.jsonl文件）")
+    parser.add_argument("--vocab_path", type=str, default="./data/tokenizer.json",
+                        help="词表路径")
+    parser.add_argument("--save_dir", type=str, default="./checkpoints_moe",
+                        help="模型保存目录")
+    
+    # 训练超参数
+    parser.add_argument("--batch_size", type=int, default=8,
+                        help="训练批次大小")
+    parser.add_argument("--num_epochs", type=int, default=5,
+                        help="训练轮次")
+    parser.add_argument("--learning_rate", type=float, default=5e-5,
+                        help="初始学习率")
+    parser.add_argument("--max_seq_length", type=int, default=512,
+                        help="最大序列长度")
+    parser.add_argument("--gradient_accumulation", type=int, default=4,
+                        help="梯度累积步数")
+    parser.add_argument("--fp16", action="store_true",
+                        help="是否启用混合精度训练")
+    parser.add_argument("--dropout", type=float, default=0.1,
+                        help="Dropout比率")
+                        
+    # 模型结构参数
+    parser.add_argument("--d_model", type=int, default=768,
+                        help="模型隐藏层维度")
+    parser.add_argument("--num_heads", type=int, default=12,
+                        help="注意力头数")
+    parser.add_argument("--num_layers", type=int, default=6,
+                        help="Transformer层数")
+    parser.add_argument("--d_ff", type=int, default=3072,
+                        help="前馈网络维度")
+    parser.add_argument("--num_experts", type=int, default=4,
+                        help="专家数量")
+    parser.add_argument("--k", type=int, default=2,
+                        help="每次激活的专家数量")
+                        
+    # 长上下文相关参数
+    parser.add_argument("--scaling_factor", type=float, default=8.0,
+                        help="RoPE缩放因子，用于长上下文模型")
+    
+    # 检查点与评估
+    parser.add_argument("--eval_every", type=int, default=500,
+                        help="每多少步评估一次")
+    parser.add_argument("--checkpoint_path", type=str, default=None,
+                        help="用于恢复训练的检查点路径")
+    parser.add_argument("--train", action="store_true",
+                        help="训练模型")
+    parser.add_argument("--process-jsonl", action="store_true", help="仅处理JSONL文件，不训练模型")
+    parser.add_argument("--limit", type=int, default=5000, help="处理JSONL文件的样本数限制")
+    
+    return parser.parse_args()
+
+
 # --------------------- 主函数 ---------------------
 def main():
+    # 声明全局变量
+    global writer, tokenizer
+    
     # 解析命令行参数
     args = parse_args()
     
@@ -486,6 +581,29 @@ def main():
     config.vocab_path = args.vocab_path
     config.checkpoint_path = args.checkpoint_path
     
+    # 设置dropout
+    config.dropout = args.dropout
+    
+    # 从参数更新模型配置
+    if args.d_model:
+        config.d_model = args.d_model
+    if args.num_heads:
+        config.num_heads = args.num_heads
+    if args.num_layers:
+        config.num_layers = args.num_layers
+    if args.d_ff:
+        config.d_ff = args.d_ff
+    if args.num_experts:
+        config.num_experts = args.num_experts
+    if args.k:
+        config.k = args.k
+    if args.max_seq_length:
+        config.max_seq_length = args.max_seq_length
+    if args.gradient_accumulation:
+        config.gradient_accumulation = args.gradient_accumulation
+    if args.fp16 is not None:
+        config.fp16 = args.fp16
+    
     # 创建保存目录
     os.makedirs(config.save_dir, exist_ok=True)
     
@@ -494,6 +612,12 @@ def main():
     
     # 设置随机种子
     setup_seed(42)
+    
+    # 设置TensorBoard
+    log_dir = os.path.join(config.save_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    writer = SummaryWriter(log_dir=log_dir)
+    logging.info(f"TensorBoard日志保存在: {log_dir}")
     
     # 准备数据加载器并获取更新后的vocab_size
     train_loader, updated_vocab_size = prepare_dataloader(
@@ -504,6 +628,16 @@ def main():
         vocab_size=config.vocab_size,
         max_seq_length=config.max_seq_length
     )
+    
+    # 如果是文本模型，获取tokenizer用于生成示例
+    tokenizer = None
+    if config.model_type != "simple_moe" and os.path.exists(config.vocab_path):
+        try:
+            from dataset_moe import Tokenizer
+            tokenizer = Tokenizer.from_file(config.vocab_path)
+            logging.info(f"为文本生成加载词表，大小: {len(tokenizer.token_to_id)}")
+        except Exception as e:
+            logging.warning(f"加载生成用词表失败: {str(e)}")
     
     # 更新config中的vocab_size
     if config.model_type != "simple_moe":
@@ -617,11 +751,8 @@ def main():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="训练MoE模型")
-    parser.add_argument("--process-jsonl", action="store_true", help="仅处理JSONL文件，不训练模型")
-    parser.add_argument("--limit", type=int, default=5000, help="处理JSONL文件的样本数限制")
-    parser.add_argument("--train", action="store_true", help="训练模型")
-    args = parser.parse_args()
+    # 解析命令行参数
+    args = parse_args()
     
     # 设置日志
     logging.basicConfig(
@@ -637,7 +768,7 @@ if __name__ == "__main__":
     if args.process_jsonl:
         # 仅处理JSONL文件
         config = TrainingConfig()
-        config.jsonl_sample_limit = args.limit
+        config.jsonl_sample_limit = args.limit if hasattr(args, 'limit') else 5000
         
         # 创建分词器
         if os.path.exists(config.vocab_path):
@@ -663,9 +794,6 @@ if __name__ == "__main__":
         )
         
         logging.info(f"JSONL处理完成，共处理{count}个样本")
-    elif args.train:
-        # 训练模型
-        main()
     else:
-        # 默认行为，运行main函数
+        # 训练模型
         main() 
