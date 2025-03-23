@@ -120,36 +120,78 @@ class Tokenizer:
     @classmethod
     def from_file(cls, vocab_path):
         """从文件加载词表"""
-        with open(vocab_path, 'r', encoding='utf-8') as f:
-            vocab_data = json.load(f)
-        
-        # 如果词表中没有vocab_size字段，根据token_to_id的大小估算
-        if "vocab_size" not in vocab_data:
-            vocab_size = max(30000, len(vocab_data.get("token_to_id", {})) * 2)
-            logging.warning(f"词表文件缺少vocab_size字段，使用默认值: {vocab_size}")
-        else:
-            vocab_size = vocab_data["vocab_size"]
-        
-        tokenizer = cls(vocab_size=vocab_size)
-        
-        # 确保token_to_id字段存在
-        if "token_to_id" not in vocab_data:
-            raise ValueError(f"词表文件{vocab_path}格式错误: 缺少token_to_id字段")
+        try:
+            with open(vocab_path, 'r', encoding='utf-8') as f:
+                vocab_data = json.load(f)
             
-        tokenizer.token_to_id = vocab_data["token_to_id"]
-        
-        # 处理特殊token
-        if "special_tokens" in vocab_data:
-            tokenizer.special_tokens = vocab_data["special_tokens"]
-        else:
-            logging.warning(f"词表文件缺少special_tokens字段，使用默认值")
-        
-        # 重建id_to_token映射
-        tokenizer.id_to_token = {int(id): token for token, id in tokenizer.token_to_id.items()}
-        tokenizer.vocab_initialized = True
-        
-        logging.info(f"从{vocab_path}加载词表，大小: {len(tokenizer.token_to_id)}")
-        return tokenizer
+            # 处理DeepSeek格式的tokenizer.json
+            if "token_to_id" not in vocab_data:
+                # 尝试处理DeepSeek格式
+                if "added_tokens" in vocab_data and isinstance(vocab_data["added_tokens"], list):
+                    logging.info(f"检测到DeepSeek格式的tokenizer.json")
+                    
+                    # 创建一个新的token_to_id字典
+                    token_to_id = {}
+                    special_tokens = {}
+                    
+                    # 处理added_tokens部分
+                    for token_info in vocab_data.get("added_tokens", []):
+                        if "id" in token_info and "content" in token_info:
+                            token_id = token_info["id"]
+                            token_content = token_info["content"]
+                            token_to_id[token_content] = token_id
+                            
+                            # 如果是特殊token
+                            if token_info.get("special", False):
+                                special_tokens[token_content] = token_id
+                    
+                    # 预估词表大小
+                    vocab_size = max(30000, max(token_to_id.values()) + 1000 if token_to_id else 30000)
+                    
+                    # 构建新的vocab_data
+                    vocab_data = {
+                        "token_to_id": token_to_id,
+                        "vocab_size": vocab_size,
+                        "special_tokens": special_tokens
+                    }
+                else:
+                    # 如果不是DeepSeek格式，也不是我们的标准格式，抛出错误
+                    raise ValueError(f"词表文件{vocab_path}格式无法识别")
+            
+            # 处理标准格式
+            # 如果词表中没有vocab_size字段，根据token_to_id的大小估算
+            if "vocab_size" not in vocab_data:
+                vocab_size = max(30000, len(vocab_data.get("token_to_id", {})) * 2)
+                logging.warning(f"词表文件缺少vocab_size字段，使用默认值: {vocab_size}")
+            else:
+                vocab_size = vocab_data["vocab_size"]
+            
+            tokenizer = cls(vocab_size=vocab_size)
+            
+            # 确保token_to_id字段存在
+            if "token_to_id" not in vocab_data:
+                raise ValueError(f"词表文件{vocab_path}格式错误: 缺少token_to_id字段")
+                
+            tokenizer.token_to_id = vocab_data["token_to_id"]
+            
+            # 处理特殊token
+            if "special_tokens" in vocab_data:
+                tokenizer.special_tokens = vocab_data["special_tokens"]
+            else:
+                logging.warning(f"词表文件缺少special_tokens字段，使用默认值")
+            
+            # 重建id_to_token映射
+            tokenizer.id_to_token = {int(id): token for token, id in tokenizer.token_to_id.items()}
+            tokenizer.vocab_initialized = True
+            
+            logging.info(f"从{vocab_path}加载词表，大小: {len(tokenizer.token_to_id)}")
+            return tokenizer
+            
+        except Exception as e:
+            logging.error(f"从{vocab_path}加载词表失败: {str(e)}")
+            # 创建一个默认的tokenizer作为后备方案
+            logging.info("创建默认词表作为后备方案")
+            return cls.create_default()
     
     @classmethod
     def create_default(cls, save_path=None):

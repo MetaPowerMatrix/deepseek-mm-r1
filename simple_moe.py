@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from rotary_embeddings import RotaryEmbedding, YarnRotaryEmbedding, apply_rotary_pos_emb
 
 class MoELayer(nn.Module):
     """简单的混合专家模型层"""
@@ -106,6 +107,14 @@ class MultiHeadAttention(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
         
+        # 应用旋转位置编码（RoPE）
+        seq_len = q.size(2)
+        position_ids = torch.arange(seq_len, device=q.device).unsqueeze(0)
+        
+        # 生成旋转编码
+        cos, sin = RotaryEmbedding(self.head_dim)(q, seq_len=seq_len)
+        q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids)
+        
         # 计算注意力分数 [batch_size, num_heads, q_len, k_len]
         scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
         
@@ -186,7 +195,10 @@ class TransformerMoE(nn.Module):
         super(TransformerMoE, self).__init__()
         
         self.token_embedding = nn.Embedding(vocab_size, d_model)
-        self.positional_encoding = PositionalEncoding(d_model, max_seq_len)
+        
+        # 使用RoPE替代原来的位置编码
+        head_dim = d_model // num_heads
+        self.rotary_emb = RotaryEmbedding(dim=head_dim, max_position_embeddings=max_seq_len)
         
         # 编码器层
         self.encoder_layers = nn.ModuleList([
@@ -207,11 +219,10 @@ class TransformerMoE(nn.Module):
     
     def forward(self, src, mask=None):
         # src: [batch_size, seq_len]
-        seq_len = src.size(1)
+        batch_size, seq_len = src.size()
         
-        # 词嵌入和位置编码
+        # 词嵌入
         src = self.token_embedding(src) * torch.sqrt(torch.tensor(self.token_embedding.embedding_dim, dtype=torch.float32))
-        src = self.positional_encoding(src)
         src = self.dropout(src)
         
         # 通过编码器层
@@ -219,7 +230,6 @@ class TransformerMoE(nn.Module):
             src = encoder_layer(src, mask)
         
         # 处理每个位置的表示
-        batch_size = src.size(0)
         # 重塑为 [batch_size * seq_len, d_model]
         reshaped_src = src.view(batch_size * seq_len, -1)
         
@@ -244,99 +254,225 @@ def count_parameters(model):
 
 # 使用示例
 if __name__ == "__main__":
-    # 创建一个简单的混合专家模型
-    model = SimpleMoE(input_size=10, hidden_size=64, output_size=2, num_experts=8, k=2)
+    # 测试代码
+    input_size = 1024
+    hidden_size = 1024
+    output_size = 1024
+    num_experts = 4
+    k = 2
     
-    # 生成随机输入数据
-    batch_size = 16
-    x = torch.randn(batch_size, 10)
+    # 测试MoE层
+    moe_layer = MoELayer(input_size, output_size, num_experts, k)
+    x = torch.randn(32, input_size)
+    output = moe_layer(x)
+    print(f"MoE层输出形状: {output.shape}")
     
-    # 前向传播
-    output = model(x)
-    print(f"输入形状: {x.shape}")
-    print(f"输出形状: {output.shape}")
-    print(f"SimpleMoE 模型参数量: {count_parameters(model):.2f}M")
+    # 测试SimpleMoE模型
+    simple_moe = SimpleMoE(input_size, hidden_size, output_size, num_experts, k)
+    output = simple_moe(x)
+    print(f"SimpleMoE输出形状: {output.shape}")
     
-    print("\n=== 扩展模型到百万级参数 ===")
-    
-    # 创建一个更大的SimpleMoE模型
-    large_model = SimpleMoE(input_size=1024, hidden_size=2048, output_size=1024, num_experts=32, k=4)
-    large_x = torch.randn(batch_size, 1024)
-    large_output = large_model(large_x)
-    print(f"大型SimpleMoE - 输入形状: {large_x.shape}")
-    print(f"大型SimpleMoE - 输出形状: {large_output.shape}")
-    print(f"大型SimpleMoE 模型参数量: {count_parameters(large_model):.2f}M")
-    
-    # 测试TransformerMoE
-    vocab_size = 50000  # 增大词汇表
-    d_model = 1024      # 增大模型维度
-    num_heads = 16
+    # 测试TransformerMoE模型
+    vocab_size = 30000
+    d_model = 768
+    num_heads = 12
     num_layers = 6
-    d_ff = 4096         # 增大前馈网络
-    max_seq_len = 512
-    num_experts = 16    # 增加专家数量
+    d_ff = 2048
+    max_seq_len = 2048
+    batch_size = 8
+    seq_len = 512
     
-    # 创建模型
-    transformer_moe = TransformerMoE(
+    transformer_moe = TransformerMoE(vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts, k)
+    src = torch.randint(0, vocab_size, (batch_size, seq_len))
+    output = transformer_moe(src)
+    print(f"TransformerMoE输出形状: {output.shape}")
+    
+    # 测试LongContextTransformerMoE模型，支持超长序列
+    long_seq_len = 8192  # 8k长度序列
+    long_moe = LongContextTransformerMoE(
         vocab_size=vocab_size,
         d_model=d_model,
         num_heads=num_heads,
         num_layers=num_layers,
         d_ff=d_ff,
-        max_seq_len=max_seq_len,
+        max_seq_len=16384,  # 支持16k上下文长度
         num_experts=num_experts,
-        k=2
+        k=k,
+        scaling_factor=8.0  # 8倍扩展
     )
     
-    # 生成随机输入
-    batch_size = 16
-    seq_len = 128
-    input_ids = torch.randint(0, vocab_size, (batch_size, seq_len))
+    # 在较短序列上测试
+    src = torch.randint(0, vocab_size, (batch_size, seq_len))
+    output = long_moe(src)
+    print(f"LongContextTransformerMoE (短序列)输出形状: {output.shape}")
     
-    # 前向传播
-    output = transformer_moe(input_ids)
-    print(f"大型Transformer MoE - 输入形状: {input_ids.shape}")
-    print(f"大型Transformer MoE - 输出形状: {output.shape}")
-    print(f"大型TransformerMoE 模型参数量: {count_parameters(transformer_moe):.2f}M")
+    # 尝试在长序列上测试（如果内存允许）
+    try:
+        long_src = torch.randint(0, vocab_size, (4, long_seq_len))  # 减小batch size以节省内存
+        long_output = long_moe(long_src)
+        print(f"LongContextTransformerMoE (长序列 {long_seq_len})输出形状: {long_output.shape}")
+    except RuntimeError as e:
+        if "CUDA out of memory" in str(e):
+            print(f"GPU内存不足，无法处理{long_seq_len}长度的序列。但模型理论上支持该长度。")
+        else:
+            print(f"运行错误: {e}")
     
-    # 分析模型各部分参数量
-    print("\n模型参数细节分析:")
+    # 比较各模型参数数量
+    print("\n模型参数统计:")
+    print(f"MoE层: {count_parameters(moe_layer):.2f}M 参数")
+    print(f"SimpleMoE: {count_parameters(simple_moe):.2f}M 参数")
+    print(f"TransformerMoE: {count_parameters(transformer_moe):.2f}M 参数")
+    print(f"LongContextTransformerMoE: {count_parameters(long_moe):.2f}M 参数")
+
+class LongContextTransformerMoE(nn.Module):
+    """支持长序列的Transformer混合专家模型"""
     
-    # TransformerMoE参数分析
-    embedding_params = sum(p.numel() for p in transformer_moe.token_embedding.parameters()) / 1e6
-    encoder_params = sum(p.numel() for layer in transformer_moe.encoder_layers 
-                         for p in layer.parameters()) / 1e6
-    moe_params = sum(p.numel() for p in transformer_moe.moe_layer.parameters()) / 1e6
-    output_params = sum(p.numel() for p in transformer_moe.output_layer.parameters()) / 1e6
+    def __init__(self, vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, 
+                 num_experts=4, k=2, dropout=0.1, scaling_factor=8.0, rope_theta=10000):
+        super(LongContextTransformerMoE, self).__init__()
+        
+        self.token_embedding = nn.Embedding(vocab_size, d_model)
+        
+        # 使用YaRN RoPE实现长序列支持
+        head_dim = d_model // num_heads
+        self.rotary_emb = YarnRotaryEmbedding(
+            dim=head_dim,
+            max_position_embeddings=max_seq_len,
+            base=rope_theta,
+            scaling_factor=scaling_factor,
+            original_max_position_embeddings=2048,  # 假设原始训练长度为2048
+            beta_fast=32,
+            beta_slow=1,
+            mscale=1,
+        )
+        
+        # 编码器层，使用支持长序列的注意力机制
+        self.encoder_layers = nn.ModuleList([
+            LongContextTransformerEncoderLayer(d_model, num_heads, d_ff, dropout, head_dim)
+            for _ in range(num_layers-1)  # 保留一层用于MoE
+        ])
+        
+        # MoE层
+        self.moe_layer = MoELayer(d_model, d_model, num_experts, k)
+        
+        # 最终的编码器层
+        self.final_layer_norm = nn.LayerNorm(d_model)
+        
+        # 输出层
+        self.output_layer = nn.Linear(d_model, vocab_size)
+        
+        self.dropout = nn.Dropout(dropout)
     
-    print(f"  - 词嵌入层参数: {embedding_params:.2f}M ({embedding_params/count_parameters(transformer_moe)*100:.1f}%)")
-    print(f"  - 编码器层参数: {encoder_params:.2f}M ({encoder_params/count_parameters(transformer_moe)*100:.1f}%)")
-    print(f"  - MoE层参数: {moe_params:.2f}M ({moe_params/count_parameters(transformer_moe)*100:.1f}%)")
-    print(f"  - 输出层参数: {output_params:.2f}M ({output_params/count_parameters(transformer_moe)*100:.1f}%)")
+    def forward(self, src, mask=None):
+        # src: [batch_size, seq_len]
+        batch_size, seq_len = src.size()
+        
+        # 词嵌入
+        src = self.token_embedding(src) * torch.sqrt(torch.tensor(self.token_embedding.embedding_dim, dtype=torch.float32))
+        src = self.dropout(src)
+        
+        # 通过编码器层
+        for encoder_layer in self.encoder_layers:
+            src = encoder_layer(src, mask, self.rotary_emb)
+        
+        # 处理每个位置的表示
+        # 重塑为 [batch_size * seq_len, d_model]
+        reshaped_src = src.view(batch_size * seq_len, -1)
+        
+        # 通过MoE层
+        moe_output = self.moe_layer(reshaped_src)
+        
+        # 重塑回 [batch_size, seq_len, d_model]
+        output = moe_output.view(batch_size, seq_len, -1)
+        
+        # 最终层归一化
+        output = self.final_layer_norm(output)
+        
+        # 输出层
+        output = self.output_layer(output)
+        
+        return output
+
+class LongContextMultiHeadAttention(nn.Module):
+    """支持长序列的多头注意力机制"""
     
-    # MoE层参数分析
-    gate_params = sum(p.numel() for p in transformer_moe.moe_layer.gate.parameters()) / 1e6
-    experts_params = sum(p.numel() for expert in transformer_moe.moe_layer.experts 
-                          for p in expert.parameters()) / 1e6
+    def __init__(self, d_model, num_heads, head_dim=None):
+        super(LongContextMultiHeadAttention, self).__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.head_dim = d_model // num_heads if head_dim is None else head_dim
+        
+        assert self.head_dim * num_heads == d_model, "d_model必须能被num_heads整除"
+        
+        self.q_linear = nn.Linear(d_model, d_model)
+        self.k_linear = nn.Linear(d_model, d_model)
+        self.v_linear = nn.Linear(d_model, d_model)
+        self.out_linear = nn.Linear(d_model, d_model)
+        
+    def forward(self, q, k, v, mask=None, rotary_emb=None):
+        batch_size = q.size(0)
+        
+        # 线性变换
+        q = self.q_linear(q)  # [batch_size, seq_len, d_model]
+        k = self.k_linear(k)  # [batch_size, seq_len, d_model]
+        v = self.v_linear(v)  # [batch_size, seq_len, d_model]
+        
+        # 分割多头 [batch_size, seq_len, d_model] -> [batch_size, seq_len, num_heads, head_dim]
+        q = q.view(batch_size, -1, self.num_heads, self.head_dim)
+        k = k.view(batch_size, -1, self.num_heads, self.head_dim)
+        v = v.view(batch_size, -1, self.num_heads, self.head_dim)
+        
+        # 转置为 [batch_size, num_heads, seq_len, head_dim]
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+        
+        # 应用旋转位置编码（RoPE）
+        if rotary_emb is not None:
+            seq_len = q.size(2)
+            position_ids = torch.arange(seq_len, device=q.device).unsqueeze(0)
+            
+            # 生成旋转编码
+            cos, sin = rotary_emb(q, seq_len=seq_len)
+            q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids)
+        
+        # 计算注意力分数 [batch_size, num_heads, q_len, k_len]
+        scores = torch.matmul(q, k.transpose(-2, -1)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
+        
+        # 应用掩码（如果提供）
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+        
+        # 计算注意力权重并应用
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_output = torch.matmul(attn_weights, v)  # [batch_size, num_heads, seq_len, head_dim]
+        
+        # 重塑并拼接 [batch_size, seq_len, d_model]
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)
+        
+        # 最终线性层
+        output = self.out_linear(attn_output)
+        
+        return output
+
+class LongContextTransformerEncoderLayer(nn.Module):
+    """支持长序列的Transformer编码器层"""
     
-    print(f"\nMoE层细节:")
-    print(f"  - 门控网络参数: {gate_params:.2f}M ({gate_params/moe_params*100:.1f}%)")
-    print(f"  - 专家网络参数: {experts_params:.2f}M ({experts_params/moe_params*100:.1f}%)")
-    
-    # 每个专家平均参数量
-    avg_expert_params = experts_params / transformer_moe.moe_layer.num_experts
-    print(f"  - 每个专家平均参数: {avg_expert_params:.2f}M")
-    
-    # 计算与传统Transformer对比
-    # 假设传统模型用相同参数量的FFN替代MoE
-    traditional_ffn_params = 2 * d_model * d_ff / 1e6  # 两个线性层
-    print(f"\n比较:")
-    print(f"  - MoE层总参数: {moe_params:.2f}M")
-    print(f"  - 等价传统FFN层参数: {traditional_ffn_params:.2f}M")
-    print(f"  - 参数量比例: {moe_params/traditional_ffn_params:.1f}x")
-    
-    # 总结
-    print("\n模型规模总结:")
-    print(f"小型SimpleMoE: {count_parameters(model):.2f}M 参数")
-    print(f"大型SimpleMoE: {count_parameters(large_model):.2f}M 参数")
-    print(f"大型TransformerMoE: {count_parameters(transformer_moe):.2f}M 参数")
+    def __init__(self, d_model, num_heads, d_ff, dropout=0.1, head_dim=None):
+        super(LongContextTransformerEncoderLayer, self).__init__()
+        self.self_attn = LongContextMultiHeadAttention(d_model, num_heads, head_dim)
+        self.feed_forward = PositionWiseFeedForward(d_model, d_ff)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, x, mask=None, rotary_emb=None):
+        # 自注意力
+        attn_output = self.self_attn(x, x, x, mask, rotary_emb)
+        x = self.norm1(x + self.dropout(attn_output))
+        
+        # 前馈网络
+        ff_output = self.feed_forward(x)
+        x = self.norm2(x + self.dropout(ff_output))
+        
+        return x
