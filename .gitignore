@@ -16,3 +16,11 @@ __pycache__/
 
 logs_moe/
 checkpoints_moe/
+tags/
+prod_imgs/
+.DS_Store
+
+qrcode.jpg
+products.json
+products.xlsx
+标签打印文档.docx
