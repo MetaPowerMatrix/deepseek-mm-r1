@@ -61,6 +61,7 @@ torchrun \
     --log_dir=$SAVE_DIR/logs \
     train_moe.py \
     --model_type=$MODEL_TYPE \
+    --local_rank=6 \
     --data_path=$DATA_PATH \
     --vocab_path=$VOCAB_PATH \
     --save_dir=$SAVE_DIR \
