@@ -1,5 +1,6 @@
-#!/bin/bash
-# 分布式训练启动脚本
+ #!/bin/bash
+# 使用Gloo后端的分布式训练启动脚本
+# 当NCCL出现问题时可以使用此脚本作为备选
 
 # 确保脚本在错误时退出
 set -e
@@ -39,26 +40,24 @@ export PYTHONFAULTHANDLER=1   # 启用Python错误处理器，打印更详细的
 export CUDA_LAUNCH_BLOCKING=1 # 使CUDA启动同步，有助于调试
 export TORCH_DISTRIBUTED_DEBUG=DETAIL  # 设置PyTorch分布式调试级别
 
-# 设置分布式训练环境变量
-export NCCL_DEBUG=INFO        # 设置NCCL调试级别 (可选: INFO, WARNING, ERROR)
-export OMP_NUM_THREADS=1      # 控制每个进程使用的OpenMP线程数
-export NCCL_P2P_DISABLE=1     # 如果NCCL有问题，尝试禁用P2P通信
-export NCCL_IB_DISABLE=1      # 如果NCCL有问题，尝试禁用InfiniBand通信
+# 强制使用Gloo后端
+export TORCH_DISTRIBUTED_BACKEND=gloo  # 强制使用gloo作为分布式后端
 
 # 创建保存目录
 mkdir -p $SAVE_DIR
 mkdir -p $(dirname $DATA_PATH)
 
-echo "启动分布式训练: 使用 $NUM_GPUS 个 GPU"
+echo "启动分布式训练 (Gloo后端): 使用 $NUM_GPUS 个 GPU"
 echo "模型类型: $MODEL_TYPE"
 echo "批次大小: $BATCH_SIZE (每GPU) x $NUM_GPUS (GPU数) = $(($BATCH_SIZE*$NUM_GPUS)) (总批次大小)"
 echo "保存目录: $SAVE_DIR"
 
-# 使用torchrun启动分布式训练 (替代已弃用的torch.distributed.launch)
-torchrun \
+# 使用torchrun启动分布式训练 (使用GLOO后端)
+python -m torch.distributed.run \
     --nproc_per_node=$NUM_GPUS \
     --master_port=29500 \
     --log_dir=$SAVE_DIR/logs \
+    --backend=gloo \
     train_moe.py \
     --model_type=$MODEL_TYPE \
     --data_path=$DATA_PATH \

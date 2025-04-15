@@ -43,14 +43,41 @@ def setup_distributed(rank, world_size, port=29500):
         world_size: 总进程数（GPU数量）
         port: 通信端口
     """
-    os.environ['MASTER_ADDR'] = 'localhost'  
-    os.environ['MASTER_PORT'] = str(port)
-    
-    # 初始化进程组
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
-    
-    # 设置当前设备
-    torch.cuda.set_device(rank)
+    try:
+        # 设置环境变量
+        os.environ['MASTER_ADDR'] = 'localhost'  
+        os.environ['MASTER_PORT'] = str(port)
+        
+        # 超时设置（秒）
+        timeout = 1800  # 30分钟
+        
+        # 打印初始化信息
+        print(f"初始化进程组: rank={rank}, world_size={world_size}, port={port}")
+        
+        # 初始化进程组
+        # 默认使用nccl后端，如果失败则尝试使用gloo后端
+        try:
+            dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=timeout))
+            print(f"进程 {rank}: 使用NCCL后端初始化成功")
+        except Exception as e:
+            print(f"进程 {rank}: NCCL初始化失败，尝试使用Gloo后端: {str(e)}")
+            # 如果NCCL失败，尝试使用gloo
+            dist.init_process_group("gloo", rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=timeout))
+            print(f"进程 {rank}: 使用Gloo后端初始化成功")
+        
+        # 设置当前设备
+        torch.cuda.set_device(rank)
+        
+        # 确保所有进程都正确初始化
+        dist.barrier()
+        print(f"进程 {rank}: 已通过barrier同步")
+        
+    except Exception as e:
+        print(f"进程 {rank}: 分布式环境初始化失败: {str(e)}")
+        # 打印详细的栈跟踪以帮助调试
+        import traceback
+        traceback.print_exc()
+        raise e
 
 
 def cleanup_distributed():
@@ -380,7 +407,7 @@ def create_optimizer_scheduler(model, config, total_steps):
 # --------------------- 训练循环 ---------------------
 def train_epoch(model, dataloader, criterion, optimizer, scheduler, device, 
               gradient_accumulation_steps=1, mixed_precision=False, amp_scaler=None,
-              clip_grad=1.0, model_type="transformer_moe", distributed=False, local_rank=0, sampler=None):
+              clip_grad=1.0, model_type="transformer_moe", distributed=False, local_rank=0, sampler=None, epoch=0):
     """单个训练轮次"""
     model.train()
     total_loss = 0.0
@@ -859,7 +886,7 @@ def main():
             model, train_loader, loss_fn, optimizer,
             scheduler, config.device, config.gradient_accumulation, 
             config.fp16, scaler, config.max_grad_norm, config.model_type,
-            distributed, local_rank, sampler
+            distributed, local_rank, sampler, epoch
         )
         
         # 记录指标 (仅在主进程中)
