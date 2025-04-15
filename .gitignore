@@ -19,6 +19,7 @@ checkpoints_moe/
 tags/
 prod_imgs/
 .DS_Store/
+data/
 
 qrcode.jpg
 products.json

@@ -23,9 +23,57 @@ import numpy as np
 import argparse
 from tqdm import tqdm
 
+# 导入PyTorch分布式训练相关库
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+
 # 导入MoE模型和数据集
 from simple_moe import SimpleMoE, TransformerMoE, count_parameters
 from dataset_moe import MoEDataset, create_dataloader, Tokenizer
+
+
+# --------------------- 分布式训练初始化 ---------------------
+def setup_distributed(rank, world_size, port=29500):
+    """
+    初始化分布式训练环境
+    
+    参数:
+        rank: 当前进程的rank
+        world_size: 总进程数（GPU数量）
+        port: 通信端口
+    """
+    os.environ['MASTER_ADDR'] = 'localhost'  
+    os.environ['MASTER_PORT'] = str(port)
+    
+    # 初始化进程组
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    
+    # 设置当前设备
+    torch.cuda.set_device(rank)
+
+
+def cleanup_distributed():
+    """清理分布式训练环境"""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def is_distributed():
+    """检查是否处于分布式训练模式"""
+    return dist.is_initialized()
+
+
+def get_rank():
+    """获取当前进程的rank"""
+    if not dist.is_initialized():
+        return 0
+    return dist.get_rank()
+
+
+def is_main_process():
+    """检查是否为主进程（rank 0）"""
+    return get_rank() == 0
 
 
 # --------------------- 配置参数 ---------------------
@@ -76,7 +124,7 @@ class TrainingConfig:
 
 
 # --------------------- 数据加载器封装 ---------------------
-def prepare_dataloader(model_type, data_path, batch_size, vocab_path=None, vocab_size=30000, max_seq_length=512, limit=None, num_workers=4):
+def prepare_dataloader(model_type, data_path, batch_size, vocab_path=None, vocab_size=30000, max_seq_length=512, limit=None, num_workers=4, distributed=False, rank=0, world_size=1):
     """
     准备数据加载器
     
@@ -89,6 +137,9 @@ def prepare_dataloader(model_type, data_path, batch_size, vocab_path=None, vocab
         max_seq_length: 最大序列长度（仅TransformerMoE需要）
         limit: 限制处理的样本数量
         num_workers: 数据加载线程数
+        distributed: 是否使用分布式训练
+        rank: 当前进程的rank
+        world_size: 总进程数
     
     返回:
         dataloader, vocab_size（用于更新模型配置）
@@ -97,40 +148,57 @@ def prepare_dataloader(model_type, data_path, batch_size, vocab_path=None, vocab
     tokenizer = None
     if model_type != "simple_moe":
         if vocab_path and os.path.exists(vocab_path):
-            logging.info(f"从{vocab_path}加载词表")
+            # 仅在主进程中打印信息
+            if not distributed or rank == 0:
+                logging.info(f"从{vocab_path}加载词表")
             from dataset_moe import Tokenizer
             tokenizer = Tokenizer.from_file(vocab_path)
             # 更新词表大小
             vocab_size = max(vocab_size, len(tokenizer.token_to_id))
-            logging.info(f"词表大小: {vocab_size}")
+            if not distributed or rank == 0:
+                logging.info(f"词表大小: {vocab_size}")
         else:
-            logging.warning(f"未找到词表文件{vocab_path}，将使用默认词表")
+            if not distributed or rank == 0:
+                logging.warning(f"未找到词表文件{vocab_path}，将使用默认词表")
     
     # 确保数据目录存在
-    os.makedirs(os.path.dirname(data_path), exist_ok=True)
+    if not distributed or rank == 0:
+        os.makedirs(os.path.dirname(data_path), exist_ok=True)
+    
+    # 如果是分布式训练，需要等待所有进程同步
+    if distributed:
+        dist.barrier()
     
     # 如果是JSONL文件，创建数据集
     if data_path.endswith(".jsonl"):
         from dataset_moe import MoEDataset
         dataset_path = data_path.replace(".jsonl", ".pt")
         if not os.path.exists(dataset_path):
-            logging.info(f"从{data_path}创建数据集")
+            if not distributed or rank == 0:
+                logging.info(f"从{data_path}创建数据集")
             if model_type == "simple_moe":
                 # SimpleMoE没有实现JSONL加载，生成合成数据集
-                logging.warning(f"SimpleMoE不支持JSONL格式，创建合成数据集")
+                if not distributed or rank == 0:
+                    logging.warning(f"SimpleMoE不支持JSONL格式，创建合成数据集")
                 dataset = MoEDataset(
                     file_path="./data/simple_moe_synthetic.pt",
                     model_type=model_type
                 )
             else:
-                # 从JSONL创建数据集
-                MoEDataset.create_from_jsonl(
-                    jsonl_path=data_path,
-                    output_path=dataset_path,
-                    tokenizer=tokenizer,
-                    max_seq_length=max_seq_length,
-                    limit=limit
-                )
+                # 从JSONL创建数据集（仅在主进程中处理）
+                if not distributed or rank == 0:
+                    MoEDataset.create_from_jsonl(
+                        jsonl_path=data_path,
+                        output_path=dataset_path,
+                        tokenizer=tokenizer,
+                        max_seq_length=max_seq_length,
+                        limit=limit
+                    )
+                
+                # 如果是分布式训练，确保所有进程等待主进程创建完数据集
+                if distributed:
+                    dist.barrier()
+                
                 dataset = MoEDataset(
                     file_path=dataset_path,
                     max_seq_length=max_seq_length,
@@ -139,7 +207,8 @@ def prepare_dataloader(model_type, data_path, batch_size, vocab_path=None, vocab
                 )
         else:
             # 数据集已存在，直接加载
-            logging.info(f"从{dataset_path}加载数据集")
+            if not distributed or rank == 0:
+                logging.info(f"从{dataset_path}加载数据集")
             dataset = MoEDataset(
                 file_path=dataset_path,
                 max_seq_length=max_seq_length,
@@ -157,36 +226,52 @@ def prepare_dataloader(model_type, data_path, batch_size, vocab_path=None, vocab
         )
     
     # 创建数据加载器
-    from dataset_moe import create_dataloader
-    dataloader = create_dataloader(
+    # 对于分布式训练，使用DistributedSampler
+    sampler = None
+    if distributed:
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=True
+        )
+    
+    # 创建数据加载器
+    dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
-        num_gpus=1, # 单机训练设为1
-        shuffle=True,
-        num_workers=num_workers
+        shuffle=(sampler is None),
+        sampler=sampler,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=True  # 丢弃最后不完整的批次
     )
     
-    logging.info(f"数据集大小: {len(dataset)}，批次数: {len(dataloader)}")
+    if not distributed or rank == 0:
+        logging.info(f"数据集大小: {len(dataset)}，批次数: {len(dataloader)}")
     
     # 返回dataloader和更新后的vocab_size
-    return dataloader, vocab_size
+    return dataloader, vocab_size, sampler
 
 
 # --------------------- 模型初始化 ---------------------
-def initialize_model(model_type, config):
+def initialize_model(model_type, config, distributed=False, local_rank=0):
     """
     初始化模型
     
     参数:
         model_type: 模型类型，"simple_moe"或"transformer_moe"
         config: 配置对象
+        distributed: 是否为分布式训练
+        local_rank: 本地GPU的rank
     
     返回:
-        初始化的模型
+        初始化的模型（如果分布式训练则返回DDP封装的模型）
     """
     from simple_moe import SimpleMoE, TransformerMoE, LongContextTransformerMoE
     
-    logging.info(f"初始化{model_type}模型...")
+    if not distributed or local_rank == 0:
+        logging.info(f"初始化{model_type}模型...")
     model = None
     
     if model_type == "simple_moe":
@@ -232,10 +317,19 @@ def initialize_model(model_type, config):
         raise ValueError(f"不支持的模型类型: {model_type}")
     
     if model is not None:
-        # 将模型移动到指定设备
-        device = getattr(config, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        # 设置正确的设备
+        device = torch.device("cuda", local_rank) if distributed else getattr(config, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         model = model.to(device)
-        logging.info(f"模型参数数量: {sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.2f}M")
+        
+        # 如果是分布式训练，使用DDP包装模型
+        if distributed:
+            # 为了防止由于默认流同步导致死锁，在DDP包装之前设置find_unused_parameters=False
+            model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
+        
+        # 打印模型参数数量
+        if not distributed or local_rank == 0:
+            num_params = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
+            logging.info(f"模型参数数量: {num_params:.2f}M")
     
     return model
 
@@ -286,16 +380,19 @@ def create_optimizer_scheduler(model, config, total_steps):
 # --------------------- 训练循环 ---------------------
 def train_epoch(model, dataloader, criterion, optimizer, scheduler, device, 
               gradient_accumulation_steps=1, mixed_precision=False, amp_scaler=None,
-              clip_grad=1.0, model_type="transformer_moe"):
+              clip_grad=1.0, model_type="transformer_moe", distributed=False, local_rank=0, sampler=None):
     """单个训练轮次"""
     model.train()
-    # 确保模型在正确的设备上
-    model = model.to(device)
     total_loss = 0.0
     batches_processed = 0
     
-    # 创建tqdm进度条
-    progress_bar = tqdm(total=len(dataloader), desc=f"训练中")
+    # 如果是分布式训练，需要设置sampler的epoch
+    if distributed and sampler is not None:
+        sampler.set_epoch(epoch)
+    
+    # 创建tqdm进度条 (仅在主进程中显示)
+    if not distributed or local_rank == 0:
+        progress_bar = tqdm(total=len(dataloader), desc=f"训练中")
     
     for batch_idx, (inputs, targets) in enumerate(dataloader):
         # 将数据移动到指定设备
@@ -304,7 +401,8 @@ def train_epoch(model, dataloader, criterion, optimizer, scheduler, device,
         
         # 确保输入索引在有效范围内
         if model_type in ["transformer_moe", "long_transformer_moe"]:
-            vocab_size = model.token_embedding.weight.size(0)
+            # 注意：如果模型是DDP封装的，需要访问.module
+            vocab_size = model.module.token_embedding.weight.size(0) if distributed else model.token_embedding.weight.size(0)
             # 检查并裁剪超出范围的索引
             inputs = torch.clamp(inputs, 0, vocab_size - 1)
             targets = torch.clamp(targets, 0, vocab_size - 1)
@@ -387,16 +485,25 @@ def train_epoch(model, dataloader, criterion, optimizer, scheduler, device,
         total_loss += loss.item() * gradient_accumulation_steps
         batches_processed += 1
         
-        # 更新进度条
-        if batch_idx % 10 == 0:
-            progress_bar.set_postfix({"loss": f"{total_loss / batches_processed:.4f}"})
-        progress_bar.update(1)
+        # 更新进度条 (仅在主进程中)
+        if not distributed or local_rank == 0:
+            if batch_idx % 10 == 0:
+                progress_bar.set_postfix({"loss": f"{total_loss / batches_processed:.4f}"})
+            progress_bar.update(1)
     
-    # 关闭进度条
-    progress_bar.close()
+    # 关闭进度条 (仅在主进程中)
+    if not distributed or local_rank == 0:
+        progress_bar.close()
     
     # 计算平均损失
     avg_loss = total_loss / batches_processed
+    
+    # 如果是分布式训练，需要在所有进程间同步损失
+    if distributed:
+        # 收集所有GPU上的损失值
+        loss_tensor = torch.tensor(avg_loss).to(device)
+        dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+        avg_loss = loss_tensor.item() / dist.get_world_size()
     
     return avg_loss
 
@@ -563,6 +670,10 @@ def parse_args():
                         help="训练模型")
     parser.add_argument("--process-jsonl", action="store_true", help="仅处理JSONL文件，不训练模型")
     parser.add_argument("--limit", type=int, default=5000, help="处理JSONL文件的样本数限制")
+    parser.add_argument("--distributed", action="store_true", help="是否启用分布式训练")
+    parser.add_argument("--local_rank", type=int, default=-1, help="本地GPU的rank")
+    parser.add_argument("--world_size", type=int, help="总进程数（GPU数量）")
+    parser.add_argument("--master_port", type=int, default=29500, help="通信端口")
     
     return parser.parse_args()
 
@@ -575,10 +686,28 @@ def main():
     # 解析命令行参数
     args = parse_args()
     
+    # 处理分布式训练参数
+    distributed = args.distributed or args.local_rank != -1
+    local_rank = args.local_rank
+    world_size = args.world_size or torch.cuda.device_count()
+    
+    # 初始化分布式环境
+    if distributed:
+        if local_rank == -1:
+            # 如果未指定local_rank但启用了分布式训练，退出
+            logging.error("分布式训练需要指定local_rank")
+            exit(1)
+        
+        # 初始化分布式环境
+        setup_distributed(local_rank, world_size, args.master_port)
+        device = torch.device("cuda", local_rank)
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     # 设置配置
     config = TrainingConfig()
     config.model_type = args.model_type
-    config.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    config.device = device
     config.data_path = args.data_path
     config.batch_size = args.batch_size
     config.num_epochs = args.num_epochs
@@ -611,49 +740,58 @@ def main():
     if args.fp16 is not None:
         config.fp16 = args.fp16
     
-    # 创建保存目录
-    os.makedirs(config.save_dir, exist_ok=True)
+    # 创建保存目录 (仅在主进程中)
+    if not distributed or local_rank == 0:
+        os.makedirs(config.save_dir, exist_ok=True)
     
-    # 设置日志
-    setup_logging(os.path.join(config.save_dir, "training.log"))
+    # 设置日志 (仅在主进程中)
+    if not distributed or local_rank == 0:
+        setup_logging(os.path.join(config.save_dir, "training.log"))
     
-    # 设置随机种子
-    setup_seed(42)
+    # 设置随机种子（确保所有进程使用相同种子）
+    setup_seed(42 + local_rank if distributed else 42)
     
-    # 设置TensorBoard
-    log_dir = os.path.join(config.save_dir, "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    writer = SummaryWriter(log_dir=log_dir)
-    logging.info(f"TensorBoard日志保存在: {log_dir}")
+    # 设置TensorBoard（仅在主进程中）
+    if not distributed or local_rank == 0:
+        log_dir = os.path.join(config.save_dir, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        writer = SummaryWriter(log_dir=log_dir)
+        logging.info(f"TensorBoard日志保存在: {log_dir}")
     
     # 准备数据加载器并获取更新后的vocab_size
-    train_loader, updated_vocab_size = prepare_dataloader(
+    train_loader, updated_vocab_size, sampler = prepare_dataloader(
         model_type=config.model_type,
         data_path=config.data_path,
         batch_size=config.batch_size,
         vocab_path=config.vocab_path,
         vocab_size=config.vocab_size,
-        max_seq_length=config.max_seq_length
+        max_seq_length=config.max_seq_length,
+        distributed=distributed,
+        rank=local_rank,
+        world_size=world_size
     )
     
-    # 如果是文本模型，获取tokenizer用于生成示例
+    # 如果是文本模型，获取tokenizer用于生成示例 (仅在主进程中)
     tokenizer = None
     if config.model_type != "simple_moe" and os.path.exists(config.vocab_path):
         try:
             from dataset_moe import Tokenizer
             tokenizer = Tokenizer.from_file(config.vocab_path)
-            logging.info(f"为文本生成加载词表，大小: {len(tokenizer.token_to_id)}")
+            if not distributed or local_rank == 0:
+                logging.info(f"为文本生成加载词表，大小: {len(tokenizer.token_to_id)}")
         except Exception as e:
-            logging.warning(f"加载生成用词表失败: {str(e)}")
+            if not distributed or local_rank == 0:
+                logging.warning(f"加载生成用词表失败: {str(e)}")
     
     # 更新config中的vocab_size
     if config.model_type != "simple_moe":
         if updated_vocab_size != config.vocab_size:
-            logging.info(f"更新词表大小: {config.vocab_size} -> {updated_vocab_size}")
+            if not distributed or local_rank == 0:
+                logging.info(f"更新词表大小: {config.vocab_size} -> {updated_vocab_size}")
             config.vocab_size = updated_vocab_size
     
     # 初始化模型
-    model = initialize_model(config.model_type, config)
+    model = initialize_model(config.model_type, config, distributed, local_rank)
     
     # 获取损失函数
     loss_fn = get_loss_fn(config)
@@ -669,56 +807,68 @@ def main():
     if torch.cuda.is_available():
         config.fp16 = config.fp16  # 保持现有设置
         scaler = torch.cuda.amp.GradScaler(enabled=config.fp16)
-        logging.info(f"混合精度训练: {'启用' if config.fp16 else '禁用'}")
+        if not distributed or local_rank == 0:
+            logging.info(f"混合精度训练: {'启用' if config.fp16 else '禁用'}")
     else:
         config.fp16 = False  # 在CPU上禁用混合精度
         scaler = torch.cuda.amp.GradScaler(enabled=False)
-        logging.info("在CPU上运行，已禁用混合精度训练")
+        if not distributed or local_rank == 0:
+            logging.info("在CPU上运行，已禁用混合精度训练")
     
     # 训练循环
-    logging.info(f"开始训练 {config.model_type} 模型...")
-    logging.info(f"数据集大小: {len(train_loader.dataset)} 样本")
-    logging.info(f"批次大小: {config.batch_size} (单GPU) x {config.num_gpus} GPU = {config.batch_size * max(1, config.num_gpus)} (有效)")
+    if not distributed or local_rank == 0:
+        logging.info(f"开始训练 {config.model_type} 模型...")
+        logging.info(f"数据集大小: {len(train_loader.dataset)} 样本")
+        effective_batch = config.batch_size * (world_size if distributed else 1)
+        logging.info(f"批次大小: {config.batch_size} (每GPU) x {world_size if distributed else 1} GPU = {effective_batch} (有效)")
     
     best_loss = float('inf')
     
     for epoch in range(config.num_epochs):
-        logging.info(f"开始 Epoch {epoch + 1}/{config.num_epochs}")
+        if not distributed or local_rank == 0:
+            logging.info(f"开始 Epoch {epoch + 1}/{config.num_epochs}")
         
         # 训练一个epoch
         avg_loss = train_epoch(
             model, train_loader, loss_fn, optimizer,
-            scheduler, config.device, config.gradient_accumulation, config.fp16, scaler, config.max_grad_norm, config.model_type
+            scheduler, config.device, config.gradient_accumulation, 
+            config.fp16, scaler, config.max_grad_norm, config.model_type,
+            distributed, local_rank, sampler
         )
         
-        # 记录指标
-        writer.add_scalar("Loss/train", avg_loss, epoch)
-        writer.add_scalar("LR", scheduler.get_last_lr()[0], epoch)
+        # 记录指标 (仅在主进程中)
+        if not distributed or local_rank == 0:
+            writer.add_scalar("Loss/train", avg_loss, epoch)
+            writer.add_scalar("LR", scheduler.get_last_lr()[0], epoch)
+            logging.info(f"Epoch {epoch + 1} 完成: 平均损失 = {avg_loss:.4f}")
         
-        logging.info(f"Epoch {epoch + 1} 完成: 平均损失 = {avg_loss:.4f}")
-        
-        # 对于TransformerMoE，生成一些示例文本
-        if config.model_type == "transformer_moe" and tokenizer:
+        # 对于TransformerMoE，生成一些示例文本 (仅在主进程中)
+        if (not distributed or local_rank == 0) and config.model_type == "transformer_moe" and tokenizer:
             if (epoch + 1) % 2 == 0:  # 每2个epoch生成一次
                 start_text = "今天是"
+                # 在生成文本时，如果模型是DDP封装的，需要使用.module
+                model_for_generation = model.module if distributed else model
                 generated_text = generate_text(
-                    model, tokenizer, start_text, 
+                    model_for_generation, tokenizer, start_text, 
                     max_length=50, device=config.device
                 )
                 logging.info(f"生成的文本示例: {generated_text}")
         
-        # 保存检查点
-        if avg_loss < best_loss:
+        # 保存检查点 (仅在主进程中)
+        if (not distributed or local_rank == 0) and avg_loss < best_loss:
             best_loss = avg_loss
             save_path = os.path.join(
                 config.output_dir,
                 f"best_model_{config.model_type}.pt"
             )
             
+            # 获取模型状态，如果是DDP模型，获取内部模型
+            model_to_save = model.module if distributed else model
+            
             # 保存模型和配置
             model_data = {
                 'epoch': epoch,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': model_to_save.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': avg_loss,
                 'config': vars(config)
@@ -732,83 +882,113 @@ def main():
             torch.save(model_data, save_path)
             logging.info(f"保存最佳模型到 {save_path}")
         
-        # 定期保存检查点
-        if (epoch + 1) % 2 == 0:
+        # 定期保存检查点 (仅在主进程中)
+        if (not distributed or local_rank == 0) and (epoch + 1) % 2 == 0:
             save_path = os.path.join(
                 config.output_dir,
                 f"{config.model_type}_checkpoint_epoch_{epoch + 1}.pt"
             )
+            
+            # 获取模型状态，如果是DDP模型，获取内部模型
+            model_to_save = model.module if distributed else model
+            
             torch.save({
                 'epoch': epoch,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': model_to_save.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': avg_loss,
                 'config': vars(config)
             }, save_path)
             logging.info(f"保存检查点到 {save_path}")
     
-    # 保存最终模型
-    final_model_path = os.path.join(
-        config.output_dir,
-        f"final_{config.model_type}_model.pt"
-    )
+    # 保存最终模型 (仅在主进程中)
+    if not distributed or local_rank == 0:
+        final_model_path = os.path.join(
+            config.output_dir,
+            f"final_{config.model_type}_model.pt"
+        )
+        
+        # 获取模型状态，如果是DDP模型，获取内部模型
+        model_to_save = model.module if distributed else model
+        
+        torch.save({
+            'model_state_dict': model_to_save.state_dict(),
+            'config': vars(config),
+            'vocab_path': config.vocab_path if tokenizer else None
+        }, final_model_path)
+        
+        logging.info(f"训练完成! 最终模型保存到 {final_model_path}")
+        logging.info(f"最佳损失: {best_loss:.4f}")
+        
+        writer.close()
     
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'config': vars(config),
-        'vocab_path': config.vocab_path if tokenizer else None
-    }, final_model_path)
-    
-    logging.info(f"训练完成! 最终模型保存到 {final_model_path}")
-    logging.info(f"最佳损失: {best_loss:.4f}")
-    
-    writer.close()
+    # 清理分布式环境
+    if distributed:
+        cleanup_distributed()
 
 
 if __name__ == "__main__":
     # 解析命令行参数
     args = parse_args()
     
-    # 设置日志
+    # 设置日志格式（在分布式训练中，只有主进程输出完整日志）
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s"
     )
     
-    # 同时输出到控制台
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    logging.getLogger().addHandler(console_handler)
+    # 检测是否启用分布式训练
+    distributed = args.distributed or args.local_rank != -1
+    
+    # 如果是分布式模式，检查local_rank是否有效
+    if distributed and args.local_rank == -1:
+        print("分布式训练需要指定local_rank参数，请使用 --local_rank=<rank> 或使用torch.distributed.launch启动")
+        exit(1)
+    
+    # 同时输出到控制台（仅主进程输出完整信息）
+    if not distributed or args.local_rank == 0:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        logging.getLogger().addHandler(console_handler)
     
     if args.process_jsonl:
-        # 仅处理JSONL文件
-        config = TrainingConfig()
-        config.jsonl_sample_limit = args.limit if hasattr(args, 'limit') else 5000
-        
-        # 创建分词器
-        if os.path.exists(config.vocab_path):
-            try:
-                tokenizer = Tokenizer.from_file(config.vocab_path)
-                logging.info(f"从{config.vocab_path}加载词表，大小: {len(tokenizer.token_to_id)}")
-            except Exception as e:
-                logging.warning(f"加载词表失败: {str(e)}")
+        # 仅处理JSONL文件（只在主进程中执行）
+        if not distributed or args.local_rank == 0:
+            config = TrainingConfig()
+            config.jsonl_sample_limit = args.limit if hasattr(args, 'limit') else 5000
+            
+            # 创建分词器
+            if os.path.exists(config.vocab_path):
+                try:
+                    tokenizer = Tokenizer.from_file(config.vocab_path)
+                    logging.info(f"从{config.vocab_path}加载词表，大小: {len(tokenizer.token_to_id)}")
+                except Exception as e:
+                    logging.warning(f"加载词表失败: {str(e)}")
+                    tokenizer = Tokenizer.create_default(save_path=config.vocab_path)
+            else:
                 tokenizer = Tokenizer.create_default(save_path=config.vocab_path)
-        else:
-            tokenizer = Tokenizer.create_default(save_path=config.vocab_path)
+            
+            # 处理JSONL文件
+            logging.info(f"开始处理JSONL文件: {config.jsonl_file}")
+            logging.info(f"样本限制: {config.jsonl_sample_limit}")
+            
+            count = MoEDataset.create_from_jsonl(
+                jsonl_path=config.jsonl_file,
+                output_path=config.dataset_path,
+                tokenizer=tokenizer,
+                max_seq_length=config.max_seq_length,
+                limit=config.jsonl_sample_limit
+            )
+            
+            logging.info(f"JSONL处理完成，共处理{count}个样本")
         
-        # 处理JSONL文件
-        logging.info(f"开始处理JSONL文件: {config.jsonl_file}")
-        logging.info(f"样本限制: {config.jsonl_sample_limit}")
-        
-        count = MoEDataset.create_from_jsonl(
-            jsonl_path=config.jsonl_file,
-            output_path=config.dataset_path,
-            tokenizer=tokenizer,
-            max_seq_length=config.max_seq_length,
-            limit=config.jsonl_sample_limit
-        )
-        
-        logging.info(f"JSONL处理完成，共处理{count}个样本")
+        # 如果是分布式训练，等待主进程处理完成
+        if distributed:
+            dist.barrier()
     else:
         # 训练模型
-        main() 
+        main()
+        
+        # 清理分布式环境
+        if distributed:
+            cleanup_distributed() 
