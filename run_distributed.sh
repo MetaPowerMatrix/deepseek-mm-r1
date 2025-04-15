@@ -1,4 +1,4 @@
- #!/bin/bash
+#!/bin/bash
 # 分布式训练启动脚本
 
 # 获取可用的GPU数量
@@ -29,8 +29,8 @@ K=2                           # 每次激活的专家数量
 export NCCL_DEBUG=INFO        # 设置NCCL调试级别 (可选: INFO, WARNING, ERROR)
 export OMP_NUM_THREADS=1      # 控制每个进程使用的OpenMP线程数
 
-# 使用 torch.distributed.launch 启动分布式训练
-python -m torch.distributed.launch \
+# 使用torchrun启动分布式训练 (替代已弃用的torch.distributed.launch)
+torchrun \
     --nproc_per_node=$NUM_GPUS \
     --master_port=29500 \
     train_moe.py \

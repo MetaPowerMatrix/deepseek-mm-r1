@@ -668,14 +668,30 @@ def parse_args():
                         help="用于恢复训练的检查点路径")
     parser.add_argument("--train", action="store_true",
                         help="训练模型")
-    parser.add_argument("--process-jsonl", action="store_true", help="仅处理JSONL文件，不训练模型")
-    parser.add_argument("--limit", type=int, default=5000, help="处理JSONL文件的样本数限制")
-    parser.add_argument("--distributed", action="store_true", help="是否启用分布式训练")
-    parser.add_argument("--local_rank", type=int, default=-1, help="本地GPU的rank")
-    parser.add_argument("--world_size", type=int, help="总进程数（GPU数量）")
-    parser.add_argument("--master_port", type=int, default=29500, help="通信端口")
+    parser.add_argument("--process-jsonl", action="store_true", 
+                        help="仅处理JSONL文件，不训练模型")
+    parser.add_argument("--limit", type=int, default=5000, 
+                        help="处理JSONL文件的样本数限制")
     
-    return parser.parse_args()
+    # 分布式训练参数
+    parser.add_argument("--local_rank", type=int, default=-1,
+                        help="分布式训练的本地GPU rank")
+    parser.add_argument("--local-rank", type=int, default=-1,
+                        help="分布式训练的本地GPU rank (torch.distributed.launch格式)")
+    parser.add_argument("--world_size", type=int, default=None,
+                        help="总进程数，默认为可用GPU数量")
+    parser.add_argument("--distributed", action="store_true",
+                        help="启用分布式训练")
+    parser.add_argument("--master_port", type=int, default=29500,
+                        help="主节点端口")
+    
+    args = parser.parse_args()
+    
+    # 处理local_rank和local-rank兼容性问题
+    if args.local_rank == -1 and getattr(args, 'local-rank', -1) != -1:
+        args.local_rank = getattr(args, 'local-rank')
+    
+    return args
 
 
 # --------------------- 主函数 ---------------------
@@ -687,9 +703,19 @@ def main():
     args = parse_args()
     
     # 处理分布式训练参数
+    # 如果使用torchrun，则从环境变量中获取local_rank
+    if "LOCAL_RANK" in os.environ:
+        args.local_rank = int(os.environ["LOCAL_RANK"])
+        args.distributed = True
+    
     distributed = args.distributed or args.local_rank != -1
     local_rank = args.local_rank
-    world_size = args.world_size or torch.cuda.device_count()
+    
+    # 如果设置了WORLD_SIZE环境变量，则使用它
+    if "WORLD_SIZE" in os.environ:
+        world_size = int(os.environ["WORLD_SIZE"])
+    else:
+        world_size = args.world_size or torch.cuda.device_count()
     
     # 初始化分布式环境
     if distributed:
