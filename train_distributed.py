@@ -64,9 +64,6 @@ def main():
     # 初始化模型
     model = TransformerMoE(vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts, k)
     
-    # 使用 DeepSpeedCPUAdam 优化器
-    optimizer = DeepSpeedCPUAdam(model.parameters(), lr=1e-4)
-    
     # DeepSpeed 配置
     ds_config = {
         "train_batch_size": 24,  # 全局批量大小
@@ -97,7 +94,6 @@ def main():
     # 使用 DeepSpeed 初始化
     model, optimizer, _, _ = deepspeed.initialize(
         model=model,
-        optimizer=optimizer,
         config=ds_config
     )
     
