@@ -6,7 +6,6 @@ from simple_moe import TransformerMoE
 from tokenizers import Tokenizer
 import logging
 import deepspeed
-from deepspeed.ops.adam import DeepSpeedCPUAdam
 
 # 配置日志
 def setup_logging(rank):
@@ -82,6 +81,15 @@ def main():
             },
             "offload_param": {
                 "device": "cpu",  # 将模型参数 Offload 到 CPU
+            }
+        },
+        "optimizer": {
+            "type": "AdamW",  # 指定优化器类型
+            "params": {
+                "lr": 1e-4,  # 学习率
+                "betas": [0.9, 0.999],  # AdamW 的 beta 参数
+                "eps": 1e-8,  # AdamW 的 epsilon 参数
+                "weight_decay": 0.01  # 权重衰减
             }
         }
     }
