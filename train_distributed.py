@@ -8,7 +8,6 @@ import logging
 import deepspeed
 from deepspeed.ops.adam import FusedAdam
 
-
 # 配置日志
 def setup_logging(rank):
     log_format = f"%(asctime)s - Rank {rank} - %(levelname)s - %(message)s"
@@ -65,9 +64,10 @@ def main():
     
     # 初始化模型
     model = TransformerMoE(vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts, k)
+    
     # 使用 FusedAdam 优化器
     optimizer = FusedAdam(model.parameters(), lr=1e-4)
-
+    
     # DeepSpeed 配置
     ds_config = {
         "train_batch_size": 24,  # 全局批量大小
