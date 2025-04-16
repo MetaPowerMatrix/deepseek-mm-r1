@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.checkpoint import checkpoint
+import deepspeed
 
 # 配置日志
 def setup_logging(rank):
@@ -81,9 +82,7 @@ def train(rank, world_size, model, train_loader, optimizer, epochs=3):
             batch = batch.to(rank)
             optimizer.zero_grad()
             with autocast():
-#                output = model(batch)
-                # 使用 checkpoint 减少显存占用
-                output = checkpoint(model, batch)
+                output = model(batch)
                 loss = output.loss
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -133,6 +132,30 @@ def main():
     model = TransformerMoE(vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts, k)
     optimizer = AdamW(model.parameters(), lr=1e-4)
     
+    # DeepSpeed 配置
+    ds_config = {
+        "train_batch_size": 4,
+        "fp16": {
+            "enabled": True
+        },
+        "zero_optimization": {
+            "stage": 2,  # 使用 ZeRO 优化
+            "offload_optimizer": {
+                "device": "cpu",  # 将优化器状态 Offload 到 CPU
+            },
+            "offload_param": {
+                "device": "cpu",  # 将模型参数 Offload 到 CPU
+            }
+        }
+    }
+    
+    # 使用 DeepSpeed 初始化
+    model, optimizer, _, _ = deepspeed.initialize(
+        model=model,
+        optimizer=optimizer,
+        config=ds_config
+    )
+    
     # 记录模型初始化完成
     logging.info("Model initialized successfully.")
     
@@ -140,7 +163,23 @@ def main():
     logging.info("Starting distributed training...")
     
     # 启动分布式训练
-    mp.spawn(train, args=(world_size, model, train_loader, optimizer), nprocs=world_size, join=True)
+    for epoch in range(3):
+        epoch_loss = 0.0
+        for i, batch in enumerate(train_loader):
+            batch = batch.to(model.device)
+            optimizer.zero_grad()
+            output = model(batch)
+            loss = output.loss
+            model.backward(loss)
+            model.step()
+            epoch_loss += loss.item()
+            
+            if i % 100 == 0 and rank == 0:
+                logging.info(f"Epoch {epoch+1}/{3}, Batch {i}, Loss: {loss.item():.4f}")
+        
+        avg_epoch_loss = epoch_loss / len(train_loader)
+        if rank == 0:
+            logging.info(f"Epoch {epoch+1}/{3} completed. Average Loss: {avg_epoch_loss:.4f}")
     
     # 记录训练完成
     logging.info("Training completed successfully.")
