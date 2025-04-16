@@ -132,6 +132,9 @@ def main():
     model = TransformerMoE(vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts, k)
     optimizer = AdamW(model.parameters(), lr=1e-4)
     
+    # 使用 torch.distributed 初始化分布式环境
+    dist.init_process_group(backend="nccl")
+    
     # DeepSpeed 配置
     ds_config = {
         "train_batch_size": 4,
@@ -148,9 +151,6 @@ def main():
             }
         }
     }
-    
-    # 显式初始化 DeepSpeed 分布式环境
-    deepspeed.init_distributed()
     
     # 使用 DeepSpeed 初始化
     model, optimizer, _, _ = deepspeed.initialize(
