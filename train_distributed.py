@@ -12,6 +12,12 @@ from fairscale.nn import checkpoint_wrapper
 from torch.cuda.amp import autocast, GradScaler
 import datetime
 
+# 配置 NCCL 环境变量
+os.environ["NCCL_DEBUG"] = "INFO"
+os.environ["NCCL_IB_DISABLE"] = "1"
+os.environ["NCCL_P2P_DISABLE"] = "1"
+os.environ["NCCL_SOCKET_TIMEOUT"] = "120000"
+
 # 配置日志
 def setup_logging(rank):
     log_format = f"%(asctime)s - Rank {rank} - %(levelname)s - %(message)s"
@@ -37,10 +43,11 @@ class JsonlDataset(Dataset):
         return torch.tensor(tokens)
 
 def setup(rank, world_size):
-    # 使用文件系统初始化
-    init_method = "file:///tmp/sharedfile"
+    # 使用 TCP 初始化
+    init_method = f"tcp://localhost:12356"
     try:
-        dist.init_process_group("nccl", init_method=init_method, rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=1200))
+        # 使用 Gloo 后端
+        dist.init_process_group("gloo", init_method=init_method, rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=1200))
         logging.info(f"Rank {rank}: Process group initialized successfully.")
     except Exception as e:
         logging.error(f"Rank {rank}: Process group initialization failed: {e}")
@@ -121,7 +128,7 @@ def main():
     tokenizer = Tokenizer.from_file('data/tokenizer.json')
     
     dataset = JsonlDataset('data/distill_r1_110k_sft.jsonl', tokenizer)
-    train_loader = DataLoader(dataset, batch_size=2, shuffle=True)  # 减少批量大小
+    train_loader = DataLoader(dataset, batch_size=1, shuffle=True)  # 进一步减少批量大小
     
     # 记录数据加载完成
     if local_rank == 0:
@@ -159,12 +166,20 @@ def main():
     # 使用激活值检查点
     model = checkpoint_wrapper(model)
     
+    # 基础优化器的参数
+    base_optimizer_args = {
+        "lr": 1e-4,
+        "weight_decay": 0.01,
+        "eps": 1e-8
+    }
+    
     # 使用 FairScale 的 OSS 优化器
     optimizer = OSS(
         params=model.parameters(),
-        optim=AdamW,
-        lr=1e-4,
-        broadcast_fp16=True,  # 使用半精度广播
+        optim=AdamW,  # 基础优化器类
+        cpu_offload=True,  # OSS 的参数
+        broadcast_fp16=True,  # OSS 的参数
+        **base_optimizer_args  # 传递给基础优化器的参数
     )
     
     # 使用 FairScale 的 ShardedDataParallel
