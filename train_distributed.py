@@ -8,6 +8,8 @@ from tokenizers import Tokenizer
 import logging
 from fairscale.nn.data_parallel import ShardedDataParallel
 from fairscale.optim.oss import OSS
+from fairscale.nn import checkpoint_wrapper
+from torch.cuda.amp import autocast, GradScaler
 import datetime
 
 # 配置日志
@@ -35,26 +37,21 @@ class JsonlDataset(Dataset):
         return torch.tensor(tokens)
 
 def setup(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=1200))
-    logging.info(f"Rank {rank}: Process group initialized successfully.")
+    # 使用文件系统初始化
+    init_method = "file:///tmp/sharedfile"
+    try:
+        dist.init_process_group("nccl", init_method=init_method, rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=1200))
+        logging.info(f"Rank {rank}: Process group initialized successfully.")
+    except Exception as e:
+        logging.error(f"Rank {rank}: Process group initialization failed: {e}")
+        raise
 
 def cleanup():
     dist.destroy_process_group()
 
-def train(rank, world_size, model, train_loader, epochs=3):
-    setup(rank, world_size)
-    model = model.to(rank)
-    
-    # 使用 FairScale 的 OSS 优化器
-    optimizer = OSS(params=model.parameters(), optim=AdamW, lr=1e-4)
-    
-    # 使用 FairScale 的 ShardedDataParallel
-    model = ShardedDataParallel(model, optimizer)
-    model.train()
-    
-    setup_logging(rank)
+def train_model(rank, world_size, model, train_loader, optimizer, epochs=3):
+    # 使用梯度缩放器
+    scaler = GradScaler()
     
     # 记录初始参数
     if rank == 0:
@@ -78,44 +75,57 @@ def train(rank, world_size, model, train_loader, epochs=3):
         logging.info(f"Number of Samples: {len(train_loader.dataset)}")
         logging.info(f"Max Sequence Length: {model.module.max_seq_len}")
     
+    # 设置梯度累积步数
+    accumulation_steps = 4
+    
     for epoch in range(epochs):
         epoch_loss = 0.0
         for i, batch in enumerate(train_loader):
             batch = batch.to(rank)
-            optimizer.zero_grad()
-            output = model(batch)
-            loss = output.loss
-            loss.backward()
-            optimizer.step()
-            epoch_loss += loss.item()
+            
+            # 使用混合精度训练
+            with autocast():
+                output = model(batch)
+                loss = output.loss / accumulation_steps  # 缩放损失
+            
+            # 使用梯度缩放器
+            scaler.scale(loss).backward()
+            
+            # 梯度累积
+            if (i + 1) % accumulation_steps == 0:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+            
+            epoch_loss += loss.item() * accumulation_steps
             
             if i % 100 == 0 and rank == 0:
-                logging.info(f"Epoch {epoch+1}/{epochs}, Batch {i}, Loss: {loss.item():.4f}")
+                logging.info(f"Epoch {epoch+1}/{epochs}, Batch {i}, Loss: {loss.item() * accumulation_steps:.4f}")
         
         avg_epoch_loss = epoch_loss / len(train_loader)
         if rank == 0:
             logging.info(f"Epoch {epoch+1}/{epochs} completed. Average Loss: {avg_epoch_loss:.4f}")
-    
-    cleanup()
 
 def main():
-    world_size = torch.cuda.device_count()
-    print(f"World size: {world_size}")
-
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    
     # 配置日志
-    setup_logging(0)
+    setup_logging(local_rank)
     
     # 记录数据加载开始
-    logging.info("Loading dataset...")
+    if local_rank == 0:
+        logging.info("Loading dataset...")
     
     # 使用 tokenizers 库加载 tokenizer.json
     tokenizer = Tokenizer.from_file('data/tokenizer.json')
     
     dataset = JsonlDataset('data/distill_r1_110k_sft.jsonl', tokenizer)
-    train_loader = DataLoader(dataset, batch_size=4, shuffle=True)  # 减少批量大小
+    train_loader = DataLoader(dataset, batch_size=2, shuffle=True)  # 减少批量大小
     
     # 记录数据加载完成
-    logging.info("Dataset loaded successfully.")
+    if local_rank == 0:
+        logging.info("Dataset loaded successfully.")
     
     vocab_size = tokenizer.get_vocab_size()
     d_model = 768
@@ -127,22 +137,52 @@ def main():
     k = 2
     
     # 记录模型初始化开始
-    logging.info("Initializing model...")
+    if local_rank == 0:
+        logging.info("Initializing model...")
     
     # 初始化模型
     model = TransformerMoE(vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts, k)
     
     # 记录模型初始化完成
-    logging.info("Model initialized successfully.")
+    if local_rank == 0:
+        logging.info("Model initialized successfully.")
     
     # 记录训练启动
-    logging.info("Starting distributed training...")
+    if local_rank == 0:
+        logging.info("Starting distributed training...")
     
-    # 启动分布式训练
-    torch.multiprocessing.spawn(train, args=(world_size, model, train_loader), nprocs=world_size, join=True)
+    # 在每个进程中初始化分布式环境
+    setup(local_rank, world_size)
+    
+    model = model.to(local_rank)
+    
+    # 使用激活值检查点
+    model = checkpoint_wrapper(model)
+    
+    # 使用 FairScale 的 OSS 优化器
+    optimizer = OSS(
+        params=model.parameters(),
+        optim=AdamW,
+        lr=1e-4,
+        cpu_offload=True,  # 启用 CPU Offload
+        state_dict_device="cpu",  # 将状态字典保存在 CPU 上
+        broadcast_fp16=True,  # 使用半精度广播
+        overlap_communication=True  # 重叠通信和计算
+    )
+    
+    # 使用 FairScale 的 ShardedDataParallel
+    model = ShardedDataParallel(model, optimizer)
+    model.train()
+    
+    # 训练模型
+    train_model(local_rank, world_size, model, train_loader, optimizer)
+    
+    # 在每个进程中清理分布式环境
+    cleanup()
     
     # 记录训练完成
-    logging.info("Training completed successfully.")
+    if local_rank == 0:
+        logging.info("Training completed successfully.")
 
 if __name__ == "__main__":
     main()
