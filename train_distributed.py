@@ -8,6 +8,7 @@ from tokenizers import Tokenizer
 import logging
 from fairscale.nn.data_parallel import ShardedDataParallel
 from fairscale.optim.oss import OSS
+import datetime
 
 # 配置日志
 def setup_logging(rank):
@@ -36,14 +37,14 @@ class JsonlDataset(Dataset):
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=1200))
     logging.info(f"Rank {rank}: Process group initialized successfully.")
 
 def cleanup():
     dist.destroy_process_group()
 
 def train(rank, world_size, model, train_loader, epochs=3):
-    setup(rank, world_size)  # 初始化进程组
+    setup(rank, world_size)
     model = model.to(rank)
     
     # 使用 FairScale 的 OSS 优化器
