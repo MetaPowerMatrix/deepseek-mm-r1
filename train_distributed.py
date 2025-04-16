@@ -6,7 +6,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, Dataset
 from torch.optim import AdamW
 from simple_moe import TransformerMoE
-from transformers import AutoTokenizer
+from tokenizers import Tokenizer
 
 class JsonlDataset(Dataset):
     def __init__(self, file_path, tokenizer, max_seq_len=2048):
@@ -22,7 +22,9 @@ class JsonlDataset(Dataset):
     
     def __getitem__(self, idx):
         text = self.data[idx]
-        tokens = self.tokenizer.encode(text, max_length=self.max_seq_len, truncation=True, padding='max_length')
+        encoding = self.tokenizer.encode(text)
+        tokens = encoding.ids[:self.max_seq_len]  # 截断到最大长度
+        tokens += [0] * (self.max_seq_len - len(tokens))  # 填充到最大长度
         return torch.tensor(tokens)
 
 def setup(rank, world_size):
@@ -54,11 +56,14 @@ def train(rank, world_size, model, train_loader, optimizer, epochs=3):
 
 def main():
     world_size = torch.cuda.device_count()
-    tokenizer = AutoTokenizer.from_pretrained('data/tokenizer.json')
+    
+    # 使用 tokenizers 库加载 tokenizer.json
+    tokenizer = Tokenizer.from_file('data/tokenizer.json')
+    
     dataset = JsonlDataset('data/distill_r1_110k_sft.jsonl', tokenizer)
     train_loader = DataLoader(dataset, batch_size=8, shuffle=True)
     
-    vocab_size = tokenizer.vocab_size
+    vocab_size = tokenizer.get_vocab_size()
     d_model = 768
     num_heads = 12
     num_layers = 6
