@@ -194,8 +194,16 @@ class TransformerMoE(nn.Module):
     def __init__(self, vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts=4, k=2, dropout=0.1):
         super(TransformerMoE, self).__init__()
         
-        self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.vocab_size = vocab_size
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.d_ff = d_ff
+        self.max_seq_len = max_seq_len
+        self.num_experts = num_experts
+        self.k = k
+        
+        self.token_embedding = nn.Embedding(vocab_size, d_model)
         
         # 使用RoPE替代原来的位置编码
         head_dim = d_model // num_heads

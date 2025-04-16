@@ -95,11 +95,20 @@ def train(rank, world_size, model, train_loader, optimizer, epochs=3):
 def main():
     world_size = torch.cuda.device_count()
     
+    # 配置日志
+    setup_logging(0)
+    
+    # 记录数据加载开始
+    logging.info("Loading dataset...")
+    
     # 使用 tokenizers 库加载 tokenizer.json
     tokenizer = Tokenizer.from_file('data/tokenizer.json')
     
     dataset = JsonlDataset('data/distill_r1_110k_sft.jsonl', tokenizer)
     train_loader = DataLoader(dataset, batch_size=8, shuffle=True)
+    
+    # 记录数据加载完成
+    logging.info("Dataset loaded successfully.")
     
     vocab_size = tokenizer.get_vocab_size()
     d_model = 768
@@ -110,16 +119,24 @@ def main():
     num_experts = 4
     k = 2
     
+    # 记录模型初始化开始
+    logging.info("Initializing model...")
+    
     # 初始化模型
     model = TransformerMoE(vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts, k)
     optimizer = AdamW(model.parameters(), lr=1e-4)
     
+    # 记录模型初始化完成
+    logging.info("Model initialized successfully.")
+    
+    # 记录训练启动
+    logging.info("Starting distributed training...")
+    
     # 启动分布式训练
     mp.spawn(train, args=(world_size, model, train_loader, optimizer), nprocs=world_size, join=True)
     
-    # 记录训练结果
-    if torch.distributed.get_rank() == 0:
-        logging.info("Training completed successfully.")
+    # 记录训练完成
+    logging.info("Training completed successfully.")
 
 if __name__ == "__main__":
     main()
