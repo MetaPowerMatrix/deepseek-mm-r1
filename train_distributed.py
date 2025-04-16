@@ -9,6 +9,7 @@ import logging
 from fairscale.nn.data_parallel import ShardedDataParallel
 from fairscale.optim.oss import OSS
 from fairscale.nn import checkpoint_wrapper
+import multiprocessing as mp
 
 # 配置日志
 def setup_logging(rank):
@@ -30,7 +31,7 @@ class JsonlDataset(Dataset):
     def __getitem__(self, idx):
         text = self.data[idx]
         encoding = self.tokenizer.encode(text)
-        tokens = encoding.ids[:极寒模式]  # 截断到最大长度
+        tokens = encoding.ids[:self.max_seq_len]  # 截断到最大长度
         tokens += [0] * (self.max_seq_len - len(tokens))  # 填充到最大长度
         return torch.tensor(tokens)
 
@@ -88,7 +89,7 @@ def train(rank, world_size, model, train_loader, optimizer, epochs=3):
             if i % 100 == 0 and rank == 0:
                 logging.info(f"Epoch {epoch+1}/{epochs}, Batch {i}, Loss: {loss.item():.4f}")
         
-        avg_epoch_loss = epoch_loss / len(train极寒模式)
+        avg_epoch_loss = epoch_loss / len(train_loader)
         if rank == 0:
             logging.info(f"Epoch {epoch+1}/{epochs} completed. Average Loss: {avg_epoch_loss:.4f}")
     
@@ -118,7 +119,7 @@ def main():
     num_layers = 6
     d_ff = 2048
     max_seq_len = 2048
-    num极寒模式 = 4
+    num_experts = 4
     k = 2
     
     # 记录模型初始化开始
