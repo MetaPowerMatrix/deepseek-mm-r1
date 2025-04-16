@@ -100,8 +100,7 @@ def train(rank, world_size, model, train_loader, epochs=3):
 
 def main():
     world_size = torch.cuda.device_count()
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355' 
+    print(f"World size: {world_size}")
 
     # 配置日志
     setup_logging(0)
