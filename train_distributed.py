@@ -9,7 +9,6 @@ import logging
 from fairscale.nn.data_parallel import ShardedDataParallel
 from fairscale.optim.oss import OSS
 from fairscale.nn import checkpoint_wrapper
-import multiprocessing as mp
 
 # 配置日志
 def setup_logging(rank):
@@ -44,7 +43,7 @@ def cleanup():
     dist.destroy_process_group()
 
 def train(rank, world_size, model, train_loader, optimizer, epochs=3):
-    setup(rank, world_size)
+    setup(rank, world_size)  # 初始化进程组
     model = model.to(rank)
     
     # 使用 FairScale 的 ShardedDataParallel
@@ -138,7 +137,7 @@ def main():
     logging.info("Starting distributed training...")
     
     # 启动分布式训练
-    mp.spawn(train, args=(world_size, model, train_loader, optimizer), nprocs=world_size, join=True)
+    torch.multiprocessing.spawn(train, args=(world_size, model, train_loader, optimizer), nprocs=world_size, join=True)
     
     # 记录训练完成
     logging.info("Training completed successfully.")
