@@ -10,6 +10,7 @@ from tokenizers import Tokenizer
 import logging
 from datetime import datetime
 from torch.cuda.amp import GradScaler, autocast
+from torch.utils.checkpoint import checkpoint
 
 # 配置日志
 def setup_logging(rank):
@@ -80,7 +81,9 @@ def train(rank, world_size, model, train_loader, optimizer, epochs=3):
             batch = batch.to(rank)
             optimizer.zero_grad()
             with autocast():
-                output = model(batch)
+#                output = model(batch)
+                # 使用 checkpoint 减少显存占用
+                output = checkpoint(model, batch)
                 loss = output.loss
             scaler.scale(loss).backward()
             scaler.step(optimizer)
