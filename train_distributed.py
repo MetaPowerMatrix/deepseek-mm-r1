@@ -126,6 +126,7 @@ def main():
     
     # 初始化模型
     model = TransformerMoE(vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts, k)
+    model.to('cuda')
     
     # 使用 FairScale 的 OSS 优化器
     optimizer = OSS(params=model.parameters(), optim=AdamW, lr=1e-4)
