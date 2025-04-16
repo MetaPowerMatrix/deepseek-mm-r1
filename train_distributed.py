@@ -2,11 +2,11 @@ import os
 import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset
-from torch.optim import AdamW
 from simple_moe import TransformerMoE
 from tokenizers import Tokenizer
 import logging
 import deepspeed
+from deepspeed.ops.adam import DeepSpeedCPUAdam
 
 # 配置日志
 def setup_logging(rank):
@@ -64,7 +64,9 @@ def main():
     
     # 初始化模型
     model = TransformerMoE(vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts, k)
-    optimizer = AdamW(model.parameters(), lr=1e-4)
+    
+    # 使用 DeepSpeedCPUAdam 优化器
+    optimizer = DeepSpeedCPUAdam(model.parameters(), lr=1e-4)
     
     # DeepSpeed 配置
     ds_config = {
