@@ -42,9 +42,12 @@ def setup(rank, world_size):
 def cleanup():
     dist.destroy_process_group()
 
-def train(rank, world_size, model, train_loader, optimizer, epochs=3):
-    setup(rank, world_size)  # 确保在训练开始前调用
+def train(rank, world_size, model, train_loader, epochs=3):
+    setup(rank, world_size)  # 初始化进程组
     model = model.to(rank)
+    
+    # 使用 FairScale 的 OSS 优化器
+    optimizer = OSS(params=model.parameters(), optim=AdamW, lr=1e-4)
     
     # 使用 FairScale 的 ShardedDataParallel
     model = ShardedDataParallel(model, optimizer)
@@ -126,10 +129,6 @@ def main():
     
     # 初始化模型
     model = TransformerMoE(vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts, k)
-    model.to('cuda')
-    
-    # 使用 FairScale 的 OSS 优化器
-    optimizer = OSS(params=model.parameters(), optim=AdamW, lr=1e-4)
     
     # 记录模型初始化完成
     logging.info("Model initialized successfully.")
@@ -138,7 +137,7 @@ def main():
     logging.info("Starting distributed training...")
     
     # 启动分布式训练
-    torch.multiprocessing.spawn(train, args=(world_size, model, train_loader, optimizer), nprocs=world_size, join=True)
+    torch.multiprocessing.spawn(train, args=(world_size, model, train_loader), nprocs=world_size, join=True)
     
     # 记录训练完成
     logging.info("Training completed successfully.")
