@@ -149,6 +149,9 @@ def main():
         }
     }
     
+    # 显式初始化 DeepSpeed 分布式环境
+    deepspeed.init_distributed()
+    
     # 使用 DeepSpeed 初始化
     model, optimizer, _, _ = deepspeed.initialize(
         model=model,
