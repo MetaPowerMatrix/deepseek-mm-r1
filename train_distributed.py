@@ -116,6 +116,7 @@ def train_model(rank, world_size, model, train_loader, optimizer, epochs=3):
 def main():
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
+    print(f"Local rank: {local_rank}, World size: {world_size}")
     
     # 配置日志
     setup_logging(local_rank)
@@ -153,11 +154,7 @@ def main():
     # 记录模型初始化完成
     if local_rank == 0:
         logging.info("Model initialized successfully.")
-    
-    # 记录训练启动
-    if local_rank == 0:
-        logging.info("Starting distributed training...")
-    
+        
     # 在每个进程中初始化分布式环境
     setup(local_rank, world_size)
     
@@ -186,6 +183,10 @@ def main():
     model = ShardedDataParallel(model, optimizer)
     model.train()
     
+    # 记录训练启动
+    if local_rank == 0:
+        logging.info("Starting distributed training...")
+
     # 训练模型
     train_model(local_rank, world_size, model, train_loader, optimizer)
     
