@@ -6,6 +6,8 @@ from simple_moe import TransformerMoE
 from tokenizers import Tokenizer
 import logging
 import deepspeed
+from deepspeed.ops.adam import FusedAdam
+
 
 # 配置日志
 def setup_logging(rank):
@@ -63,7 +65,9 @@ def main():
     
     # 初始化模型
     model = TransformerMoE(vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts, k)
-    
+    # 使用 FusedAdam 优化器
+    optimizer = FusedAdam(model.parameters(), lr=1e-4)
+
     # DeepSpeed 配置
     ds_config = {
         "train_batch_size": 24,  # 全局批量大小
@@ -79,21 +83,13 @@ def main():
             "offload_param": {
                 "device": "cpu",  # 将模型参数 Offload 到 CPU
             }
-        },
-        "optimizer": {
-            "type": "AdamW",  # 指定优化器类型
-            "params": {
-                "lr": 1e-4,  # 学习率
-                "betas": [0.9, 0.999],  # AdamW 的 beta 参数
-                "eps": 1e-8,  # AdamW 的 epsilon 参数
-                "weight_decay": 0.01  # 权重衰减
-            }
         }
     }
     
     # 使用 DeepSpeed 初始化
     model, optimizer, _, _ = deepspeed.initialize(
         model=model,
+        optimizer=optimizer,
         config=ds_config
     )
     
