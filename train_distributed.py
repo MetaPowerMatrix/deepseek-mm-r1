@@ -9,6 +9,7 @@ from simple_moe import TransformerMoE
 from tokenizers import Tokenizer
 import logging
 from datetime import datetime
+from torch.cuda.amp import GradScaler, autocast
 
 # 配置日志
 def setup_logging(rank):
@@ -49,6 +50,7 @@ def train(rank, world_size, model, train_loader, optimizer, epochs=3):
     model.train()
     
     setup_logging(rank)
+    scaler = GradScaler()
     
     # 记录初始参数
     if rank == 0:
@@ -77,10 +79,12 @@ def train(rank, world_size, model, train_loader, optimizer, epochs=3):
         for i, batch in enumerate(train_loader):
             batch = batch.to(rank)
             optimizer.zero_grad()
-            output = model(batch)
-            loss = output.loss
-            loss.backward()
-            optimizer.step()
+            with autocast():
+                output = model(batch)
+                loss = output.loss
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             epoch_loss += loss.item()
             
             if i % 100 == 0 and rank == 0:
@@ -105,7 +109,7 @@ def main():
     tokenizer = Tokenizer.from_file('data/tokenizer.json')
     
     dataset = JsonlDataset('data/distill_r1_110k_sft.jsonl', tokenizer)
-    train_loader = DataLoader(dataset, batch_size=8, shuffle=True)
+    train_loader = DataLoader(dataset, batch_size=4, shuffle=True)  # 减少批量大小
     
     # 记录数据加载完成
     logging.info("Dataset loaded successfully.")
