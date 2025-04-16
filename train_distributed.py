@@ -8,7 +8,6 @@ from tokenizers import Tokenizer
 import logging
 from fairscale.nn.data_parallel import ShardedDataParallel
 from fairscale.optim.oss import OSS
-from fairscale.nn import checkpoint_wrapper
 
 # 配置日志
 def setup_logging(rank):
@@ -38,12 +37,13 @@ def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    logging.info(f"Rank {rank}: Process group initialized successfully.")
 
 def cleanup():
     dist.destroy_process_group()
 
 def train(rank, world_size, model, train_loader, optimizer, epochs=3):
-    setup(rank, world_size)  # 初始化进程组
+    setup(rank, world_size)  # 确保在训练开始前调用
     model = model.to(rank)
     
     # 使用 FairScale 的 ShardedDataParallel
