@@ -159,20 +159,12 @@ def main():
     # 使用激活值检查点
     model = checkpoint_wrapper(model)
     
-    # 基础优化器的参数
-    base_optimizer_args = {
-        "lr": 1e-4,
-        "weight_decay": 0.01,
-        "eps": 1e-8
-    }
-    
     # 使用 FairScale 的 OSS 优化器
     optimizer = OSS(
         params=model.parameters(),
-        optim=AdamW,  # 基础优化器类
-        cpu_offload=True,  # OSS 的参数
-        broadcast_fp16=True,  # OSS 的参数
-        **base_optimizer_args  # 传递给基础优化器的参数
+        optim=AdamW,
+        lr=1e-4,
+        broadcast_fp16=True,  # 使用半精度广播
     )
     
     # 使用 FairScale 的 ShardedDataParallel
