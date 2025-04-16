@@ -50,6 +50,28 @@ def train(rank, world_size, model, train_loader, optimizer, epochs=3):
     
     setup_logging(rank)
     
+    # 记录初始参数
+    if rank == 0:
+        logging.info("Initial Parameters:")
+        logging.info(f"Vocab Size: {model.module.vocab_size}")
+        logging.info(f"Model Dimensions: {model.module.d_model}")
+        logging.info(f"Number of Heads: {model.module.num_heads}")
+        logging.info(f"Number of Layers: {model.module.num_layers}")
+        logging.info(f"Feedforward Dimensions: {model.module.d_ff}")
+        logging.info(f"Max Sequence Length: {model.module.max_seq_len}")
+        logging.info(f"Number of Experts: {model.module.num_experts}")
+        logging.info(f"Top-k Experts: {model.module.k}")
+        logging.info(f"Learning Rate: {optimizer.param_groups[0]['lr']}")
+        logging.info(f"Batch Size: {train_loader.batch_size}")
+        logging.info(f"Number of Epochs: {epochs}")
+        logging.info(f"Number of GPUs: {world_size}")
+    
+    # 记录数据集指标
+    if rank == 0:
+        logging.info("Dataset Metrics:")
+        logging.info(f"Number of Samples: {len(train_loader.dataset)}")
+        logging.info(f"Max Sequence Length: {model.module.max_seq_len}")
+    
     for epoch in range(epochs):
         epoch_loss = 0.0
         for i, batch in enumerate(train_loader):
@@ -91,28 +113,6 @@ def main():
     # 初始化模型
     model = TransformerMoE(vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts, k)
     optimizer = AdamW(model.parameters(), lr=1e-4)
-    
-    # 记录初始参数
-    if torch.distributed.get_rank() == 0:
-        logging.info("Initial Parameters:")
-        logging.info(f"Vocab Size: {vocab_size}")
-        logging.info(f"Model Dimensions: {d_model}")
-        logging.info(f"Number of Heads: {num_heads}")
-        logging.info(f"Number of Layers: {num_layers}")
-        logging.info(f"Feedforward Dimensions: {d_ff}")
-        logging.info(f"Max Sequence Length: {max_seq_len}")
-        logging.info(f"Number of Experts: {num_experts}")
-        logging.info(f"Top-k Experts: {k}")
-        logging.info(f"Learning Rate: {1e-4}")
-        logging.info(f"Batch Size: {8}")
-        logging.info(f"Number of Epochs: {3}")
-        logging.info(f"Number of GPUs: {world_size}")
-    
-    # 记录数据集指标
-    if torch.distributed.get_rank() == 0:
-        logging.info("Dataset Metrics:")
-        logging.info(f"Number of Samples: {len(dataset)}")
-        logging.info(f"Max Sequence Length: {max_seq_len}")
     
     # 启动分布式训练
     mp.spawn(train, args=(world_size, model, train_loader, optimizer), nprocs=world_size, join=True)
