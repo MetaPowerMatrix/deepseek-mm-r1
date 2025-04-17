@@ -320,8 +320,12 @@ def main():
     local_rank = setup_distributed()
     
     # 初始化tokenizer
-    tokenizer = AutoTokenizer.from_pretrained("bert-base-chinese")
-    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer = AutoTokenizer.from_pretrained(
+        "bert-base-chinese",
+        pad_token="[PAD]",  # 直接指定
+        padding_side="left"  # GPT类模型通常需要左侧填充
+    )
+    # tokenizer.pad_token = tokenizer.eos_token
     
     assert tokenizer.pad_token is not None, "Tokenizer未设置pad_token!"
     
