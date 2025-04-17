@@ -193,7 +193,7 @@ class TransformerEncoderLayer(nn.Module):
 class TransformerMoE(nn.Module):
     """基于Transformer的混合专家模型"""
     
-    def __init__(self, vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts=4, k=2, dropout=0.1):
+    def __init__(self, vocab_size, d_model=768, num_heads=12, num_layers=6, d_ff=2048, max_seq_len=2048, num_experts=4, k=2, dropout=0.1, pad_token_id=None):
         super(TransformerMoE, self).__init__()
         
         self.vocab_size = vocab_size
@@ -204,6 +204,7 @@ class TransformerMoE(nn.Module):
         self.max_seq_len = max_seq_len
         self.num_experts = num_experts
         self.k = k
+        self.pad_token_id = pad_token_id
         
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         
@@ -234,6 +235,11 @@ class TransformerMoE(nn.Module):
         
         # 安全检查：确保输入索引不超过词表大小
         src = torch.clamp(src, 0, self.vocab_size - 1)
+        
+        # 如果未提供掩码且有pad_token_id，则创建注意力掩码
+        if mask is None and self.pad_token_id is not None:
+            # 创建attention mask，将pad_token_id标记为0，其他为1
+            mask = (src != self.pad_token_id).unsqueeze(1).unsqueeze(2)  # [batch_size, 1, 1, seq_len]
         
         # 词嵌入
         embedding_dim_tensor = torch.tensor(self.token_embedding.embedding_dim, 
@@ -324,7 +330,8 @@ class TransformerMoE(nn.Module):
             max_seq_len=config.get("max_seq_len", config.get("max_position_embeddings", 2048)),
             num_experts=config.get("num_experts", 4),
             k=config.get("k", 2),
-            dropout=config.get("dropout", config.get("hidden_dropout_prob", 0.1))
+            dropout=config.get("dropout", config.get("hidden_dropout_prob", 0.1)),
+            pad_token_id=config.get("pad_token_id")
         )
         
         # 加载权重到模型
@@ -406,7 +413,8 @@ class TransformerMoE(nn.Module):
             "max_seq_len": self.max_seq_len,
             "num_experts": self.num_experts,
             "k": self.k,
-            "model_type": "transformer_moe"
+            "model_type": "transformer_moe",
+            "pad_token_id": self.pad_token_id
         }
         
         with open(os.path.join(save_directory, "config.json"), "w", encoding="utf-8") as f:
@@ -451,9 +459,22 @@ if __name__ == "__main__":
     max_seq_len = 2048
     batch_size = 8
     seq_len = 512
+    pad_token_id = 0  # 默认使用0作为padding token
     
-    transformer_moe = TransformerMoE(vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, num_experts, k)
+    transformer_moe = TransformerMoE(
+        vocab_size=vocab_size, 
+        d_model=d_model, 
+        num_heads=num_heads, 
+        num_layers=num_layers, 
+        d_ff=d_ff, 
+        max_seq_len=max_seq_len, 
+        num_experts=num_experts, 
+        k=k,
+        pad_token_id=pad_token_id
+    )
     src = torch.randint(0, vocab_size, (batch_size, seq_len))
+    # 设置一些padding值来测试掩码功能
+    src[:, -50:] = pad_token_id
     output = transformer_moe(src)
     print(f"TransformerMoE输出形状: {output.shape}")
     
@@ -468,7 +489,9 @@ if __name__ == "__main__":
         max_seq_len=16384,  # 支持16k上下文长度
         num_experts=num_experts,
         k=k,
-        scaling_factor=8.0  # 8倍扩展
+        scaling_factor=8.0,  # 8倍扩展
+        rope_theta=10000,  # 10k作为rope_theta
+        pad_token_id=pad_token_id
     )
     
     # 在较短序列上测试
@@ -498,11 +521,12 @@ class LongContextTransformerMoE(nn.Module):
     """支持长序列的Transformer混合专家模型"""
     
     def __init__(self, vocab_size, d_model, num_heads, num_layers, d_ff, max_seq_len, 
-                 num_experts=4, k=2, dropout=0.1, scaling_factor=8.0, rope_theta=10000):
+                 num_experts=4, k=2, dropout=0.1, scaling_factor=8.0, rope_theta=10000, pad_token_id=None):
         super(LongContextTransformerMoE, self).__init__()
         
         self.token_embedding = nn.Embedding(vocab_size, d_model)
         self.vocab_size = vocab_size
+        self.pad_token_id = pad_token_id
         
         # 使用YaRN RoPE实现长序列支持
         head_dim = d_model // num_heads
@@ -540,6 +564,11 @@ class LongContextTransformerMoE(nn.Module):
         
         # 安全检查：确保输入索引不超过词表大小
         src = torch.clamp(src, 0, self.vocab_size - 1)
+        
+        # 如果未提供掩码且有pad_token_id，则创建注意力掩码
+        if mask is None and self.pad_token_id is not None:
+            # 创建attention mask，将pad_token_id标记为0，其他为1
+            mask = (src != self.pad_token_id).unsqueeze(1).unsqueeze(2)  # [batch_size, 1, 1, seq_len]
         
         # 词嵌入
         embedding_dim_tensor = torch.tensor(self.token_embedding.embedding_dim, 
