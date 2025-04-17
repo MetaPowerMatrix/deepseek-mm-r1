@@ -334,7 +334,8 @@ def main():
     
     model = TransformerMoE(
         vocab_size=TrainingConfig.model_config['vocab_size'],
-        pad_token_id=TrainingConfig.model_config['pad_token_id']
+        pad_token_id=TrainingConfig.model_config['pad_token_id'],
+        max_seq_len=TrainingConfig.max_seq_len
     ).cuda()
     
     # 使用DDP包装模型
