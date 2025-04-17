@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import math
+import json
 from datetime import datetime
 import torch
 import torch.distributed as dist
@@ -14,8 +15,8 @@ from transformers import AutoTokenizer
 class TrainingConfig:
     # 数据参数
     data_dir = "./data"
-    train_file = "train.txt"
-    val_file = "val.txt"
+    train_file = "train.jsonl"
+    val_file = "val.jsonl"
     max_seq_len = 512
     
     # 训练参数
@@ -49,11 +50,25 @@ class TextDataset(Dataset):
         self.max_len = max_len
         self.examples = []
         
+        file_ext = os.path.splitext(file_path)[1].lower()
         with open(file_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    self.examples.append(line)
+            if file_ext == '.jsonl':
+                # 处理jsonl格式文件
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            data = json.loads(line)
+                            if 'text' in data:
+                                self.examples.append(data['text'])
+                        except json.JSONDecodeError:
+                            continue
+            else:
+                # 处理普通文本文件
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        self.examples.append(line)
     
     def __len__(self):
         return len(self.examples)
