@@ -16,7 +16,6 @@ import datetime
 os.environ["NCCL_DEBUG"] = "INFO"
 os.environ["NCCL_IB_DISABLE"] = "1"
 os.environ["NCCL_P2P_DISABLE"] = "1"
-os.environ["NCCL_SOCKET_TIMEOUT"] = "120000"
 
 # 配置日志
 def setup_logging(rank):

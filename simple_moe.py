@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from rotary_embeddings import RotaryEmbedding, YarnRotaryEmbedding, apply_rotary_pos_emb
+import os
+import json
 
 class MoELayer(nn.Module):
     """简单的混合专家模型层"""
@@ -261,6 +263,159 @@ class TransformerMoE(nn.Module):
         output = self.output_layer(output)
         
         return output
+    
+    @classmethod
+    def from_pretrained(cls, model_path, device=None):
+        """
+        从预训练模型加载权重
+        
+        参数:
+            model_path: 预训练模型路径，可以是本地文件路径或Hugging Face模型ID
+            device: 设备，如'cuda'或'cpu'
+            
+        返回:
+            加载了预训练权重的TransformerMoE模型
+        """
+        # 加载模型配置和权重
+        if os.path.isdir(model_path):
+            # 本地文件路径
+            config_path = os.path.join(model_path, "config.json")
+            weights_path = os.path.join(model_path, "pytorch_model.bin")
+            
+            # 检查文件是否存在
+            if not os.path.exists(config_path):
+                raise FileNotFoundError(f"配置文件不存在: {config_path}")
+            if not os.path.exists(weights_path):
+                raise FileNotFoundError(f"权重文件不存在: {weights_path}")
+            
+            # 加载配置
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            
+            # 加载权重
+            weights = torch.load(weights_path, map_location=torch.device('cpu'))
+        else:
+            # 尝试从Hugging Face加载
+            try:
+                from transformers import AutoConfig, AutoModel
+                
+                # 加载配置
+                config = AutoConfig.from_pretrained(model_path).to_dict()
+                
+                # 加载预训练模型
+                hf_model = AutoModel.from_pretrained(model_path)
+                
+                # 提取权重
+                weights = {k: v for k, v in hf_model.state_dict().items()}
+                
+                del hf_model  # 释放内存
+            except ImportError:
+                raise ImportError("使用Hugging Face模型需要安装transformers库")
+            except Exception as e:
+                raise ValueError(f"从Hugging Face加载模型失败: {str(e)}")
+        
+        # 创建模型实例
+        model = cls(
+            vocab_size=config.get("vocab_size"),
+            d_model=config.get("d_model", config.get("hidden_size", 768)),
+            num_heads=config.get("num_heads", config.get("num_attention_heads", 12)),
+            num_layers=config.get("num_layers", config.get("num_hidden_layers", 6)),
+            d_ff=config.get("d_ff", config.get("intermediate_size", 2048)),
+            max_seq_len=config.get("max_seq_len", config.get("max_position_embeddings", 2048)),
+            num_experts=config.get("num_experts", 4),
+            k=config.get("k", 2),
+            dropout=config.get("dropout", config.get("hidden_dropout_prob", 0.1))
+        )
+        
+        # 加载权重到模型
+        # 处理权重名称不匹配的情况
+        model_state_dict = model.state_dict()
+        new_weights = {}
+        
+        for name, tensor in weights.items():
+            # 尝试将Hugging Face模型的权重映射到我们的模型
+            if name in model_state_dict:
+                if tensor.shape == model_state_dict[name].shape:
+                    new_weights[name] = tensor
+                else:
+                    print(f"警告: 权重形状不匹配: {name}, 预期 {model_state_dict[name].shape}, 实际 {tensor.shape}")
+            else:
+                # 尝试映射常见的命名差异
+                mapped_name = None
+                
+                # 词嵌入映射
+                if "embeddings.word_embeddings.weight" in name:
+                    mapped_name = "token_embedding.weight"
+                # 层归一化映射
+                elif "LayerNorm" in name:
+                    if "encoder.layer" in name:
+                        layer_idx = int(name.split("encoder.layer.")[1].split(".")[0])
+                        if layer_idx < model.num_layers - 1:
+                            if "attention" in name and "LayerNorm" in name:
+                                mapped_name = f"encoder_layers.{layer_idx}.norm1.weight"
+                            elif "output" in name and "LayerNorm" in name:
+                                mapped_name = f"encoder_layers.{layer_idx}.norm2.weight"
+                    elif "encoder.output.LayerNorm" in name:
+                        mapped_name = "final_layer_norm.weight"
+                
+                if mapped_name and mapped_name in model_state_dict:
+                    if tensor.shape == model_state_dict[mapped_name].shape:
+                        new_weights[mapped_name] = tensor
+                        print(f"映射权重: {name} -> {mapped_name}")
+                    else:
+                        print(f"警告: 映射权重形状不匹配: {name} -> {mapped_name}")
+        
+        # 加载匹配的权重
+        missing, unexpected = model.load_state_dict(new_weights, strict=False)
+        
+        if missing:
+            print(f"缺少的权重: {len(missing)} 项")
+            if len(missing) < 10:  # 只显示前几个
+                print(missing)
+        
+        if unexpected:
+            print(f"意外的权重: {len(unexpected)} 项")
+            if len(unexpected) < 10:  # 只显示前几个
+                print(unexpected)
+        
+        # 将模型移动到指定设备
+        if device:
+            model = model.to(device)
+        
+        # 设置为评估模式
+        model.eval()
+        
+        return model
+    
+    def save_pretrained(self, save_directory):
+        """
+        保存模型到指定目录
+        
+        参数:
+            save_directory: 保存模型的目录
+        """
+        os.makedirs(save_directory, exist_ok=True)
+        
+        # 保存配置
+        config = {
+            "vocab_size": self.vocab_size,
+            "d_model": self.d_model,
+            "num_heads": self.num_heads,
+            "num_layers": self.num_layers,
+            "d_ff": self.d_ff,
+            "max_seq_len": self.max_seq_len,
+            "num_experts": self.num_experts,
+            "k": self.k,
+            "model_type": "transformer_moe"
+        }
+        
+        with open(os.path.join(save_directory, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+        
+        # 保存模型权重
+        torch.save(self.state_dict(), os.path.join(save_directory, "pytorch_model.bin"))
+        
+        print(f"模型已保存到: {save_directory}")
 
 # 计算模型参数数量
 def count_parameters(model):
