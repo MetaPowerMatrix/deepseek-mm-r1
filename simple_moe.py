@@ -229,7 +229,25 @@ class TransformerMoE(nn.Module):
         
         self.dropout = nn.Dropout(dropout)
     
-    def forward(self, src, mask=None):
+    def forward(self, src=None, mask=None, input_ids=None, attention_mask=None, labels=None):
+        """
+        前向传播函数，支持两种调用方式：
+        1. 直接传入src和mask
+        2. 使用HuggingFace风格的参数：input_ids, attention_mask, labels
+        """
+        # 如果提供了input_ids，将其作为src
+        if input_ids is not None:
+            src = input_ids
+            
+        # 如果提供了attention_mask，将其作为mask
+        if attention_mask is not None:
+            # 转换attention_mask格式为多头注意力的格式
+            mask = attention_mask.unsqueeze(1).unsqueeze(2)  # [batch_size, 1, 1, seq_len]
+        
+        # 确保有有效的src
+        if src is None:
+            raise ValueError("必须提供input_ids或src参数")
+        
         # src: [batch_size, seq_len]
         batch_size, seq_len = src.size()
         
@@ -266,9 +284,24 @@ class TransformerMoE(nn.Module):
         output = self.final_layer_norm(output)
         
         # 输出层
-        output = self.output_layer(output)
+        logits = self.output_layer(output)
         
-        return output
+        # 如果提供了标签，计算损失
+        loss = None
+        if labels is not None:
+            # 使用交叉熵损失计算
+            # 重塑为 [batch_size * seq_len, vocab_size]
+            logits_view = logits.view(-1, self.vocab_size)
+            # 重塑为 [batch_size * seq_len]
+            labels_view = labels.view(-1)
+            # 计算交叉熵损失
+            loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+            loss = loss_fct(logits_view, labels_view)
+        
+        # 返回结果，支持HuggingFace风格的返回格式
+        if loss is not None:
+            return type('ModelOutput', (), {'loss': loss, 'logits': logits})
+        return logits
     
     @classmethod
     def from_pretrained(cls, model_path, device=None):
@@ -558,7 +591,25 @@ class LongContextTransformerMoE(nn.Module):
         
         self.dropout = nn.Dropout(dropout)
     
-    def forward(self, src, mask=None):
+    def forward(self, src=None, mask=None, input_ids=None, attention_mask=None, labels=None):
+        """
+        前向传播函数，支持两种调用方式：
+        1. 直接传入src和mask
+        2. 使用HuggingFace风格的参数：input_ids, attention_mask, labels
+        """
+        # 如果提供了input_ids，将其作为src
+        if input_ids is not None:
+            src = input_ids
+            
+        # 如果提供了attention_mask，将其作为mask
+        if attention_mask is not None:
+            # 转换attention_mask格式为多头注意力的格式
+            mask = attention_mask.unsqueeze(1).unsqueeze(2)  # [batch_size, 1, 1, seq_len]
+        
+        # 确保有有效的src
+        if src is None:
+            raise ValueError("必须提供input_ids或src参数")
+        
         # src: [batch_size, seq_len]
         batch_size, seq_len = src.size()
         
@@ -595,9 +646,24 @@ class LongContextTransformerMoE(nn.Module):
         output = self.final_layer_norm(output)
         
         # 输出层
-        output = self.output_layer(output)
+        logits = self.output_layer(output)
         
-        return output
+        # 如果提供了标签，计算损失
+        loss = None
+        if labels is not None:
+            # 使用交叉熵损失计算
+            # 重塑为 [batch_size * seq_len, vocab_size]
+            logits_view = logits.view(-1, self.vocab_size)
+            # 重塑为 [batch_size * seq_len]
+            labels_view = labels.view(-1)
+            # 计算交叉熵损失
+            loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+            loss = loss_fct(logits_view, labels_view)
+        
+        # 返回结果，支持HuggingFace风格的返回格式
+        if loss is not None:
+            return type('ModelOutput', (), {'loss': loss, 'logits': logits})
+        return logits
 
 class LongContextMultiHeadAttention(nn.Module):
     """支持长序列的多头注意力机制"""
