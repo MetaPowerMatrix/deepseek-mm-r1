@@ -20,7 +20,7 @@ class TrainingConfig:
     max_seq_len = 512
     
     # 训练参数
-    batch_size = 16  # 每个GPU的batch size
+    batch_size = 4  # 每个GPU的batch size
     gradient_accum_steps = 2  # 梯度累积步数
     epochs = 5
     learning_rate = 5e-5
@@ -39,8 +39,8 @@ class TrainingConfig:
     
     # 模型参数 (应与你的模型实现匹配)
     model_config = {
-        "vocab_size": 50257,
-        "pad_token_id": 50256
+        "vocab_size": 21128,
+        "pad_token_id": 21127
     }
 
 # 自定义数据集类
