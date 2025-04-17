@@ -22,7 +22,7 @@ class TrainingConfig:
     # 训练参数
     batch_size = 16  # 每个GPU的batch size
     gradient_accum_steps = 2  # 梯度累积步数
-    epochs = 10
+    epochs = 5
     learning_rate = 5e-5
     warmup_steps = 1000
     weight_decay = 0.01
@@ -322,6 +322,8 @@ def main():
     # 初始化tokenizer
     tokenizer = AutoTokenizer.from_pretrained("bert-base-chinese")
     tokenizer.pad_token = tokenizer.eos_token
+    
+    assert tokenizer.pad_token is not None, "Tokenizer未设置pad_token!"
     
     # 初始化模型 (假设你的模型类名为TransformerMoE)
     from simple_moe import TransformerMoE  # 替换为你的模型导入
