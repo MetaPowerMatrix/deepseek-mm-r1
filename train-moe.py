@@ -320,7 +320,7 @@ def main():
     local_rank = setup_distributed()
     
     # 初始化tokenizer
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
+    tokenizer = AutoTokenizer.from_pretrained("google-bert/bert-base-chinese")
     tokenizer.pad_token = tokenizer.eos_token
     
     # 初始化模型 (假设你的模型类名为TransformerMoE)
