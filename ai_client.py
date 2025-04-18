@@ -32,7 +32,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 AUDIO_DIR = os.getenv("AUDIO_DIR", "audio_files")
 PROCESSED_DIR = os.getenv("PROCESSED_DIR", "processed_files")
 TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
-WS_URL = os.getenv("WS_URL", "ws://localhost:8000/api/proxy")
+WS_URL = os.getenv("WS_URL", "ws://stream.kalaisai.com:8000/ws/proxy")
 VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "vosk-model-cn-0.22")
 
 
