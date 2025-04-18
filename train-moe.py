@@ -21,7 +21,7 @@ class TrainingConfig:
     max_seq_len = 512
     
     # 训练参数
-    batch_size = 8  # 每个GPU的batch size
+    batch_size = 16  # 每个GPU的batch size
     gradient_accum_steps = 2  # 梯度累积步数
     epochs = 5
     learning_rate = 5e-5
@@ -41,7 +41,7 @@ class TrainingConfig:
     # 模型参数 (应与你的模型实现匹配)
     model_config = {
         "vocab_size": 21128,
-        "pad_token_id": 21127
+        "pad_token_id": 0
     }
 
 # 自定义数据集类
@@ -263,12 +263,16 @@ def train_model(model, tokenizer, local_rank):
         
         if local_rank == 0:
             logger.info(f"Epoch {epoch + 1}/{TrainingConfig.epochs}")
-            # 创建进度条
+            # 创建进度条，但对total使用batch数量而不是累积步骤数
+            total_batches = len(train_loader)
             progress_bar = tqdm(
-                total=len(train_loader),
+                total=100,  # 使用百分比作为总数
                 desc=f"Epoch {epoch+1}/{TrainingConfig.epochs}",
-                disable=local_rank != 0
+                disable=local_rank != 0,
+                ncols=100,  # 固定宽度
+                bar_format='{l_bar}{bar}| {n_fmt}% [{elapsed}<{remaining}, {rate_fmt}]'
             )
+            last_percent = 0
             epoch_start_time = time.time()
         
         epoch_loss = 0
@@ -283,26 +287,33 @@ def train_model(model, tokenizer, local_rank):
             )
             epoch_loss += loss
             
+            # 计算当前进度百分比
+            if local_rank == 0:
+                current_percent = int((batch_idx + 1) / total_batches * 100)
+                if current_percent > last_percent:  # 只在百分比变化时更新
+                    # 更新进度条
+                    progress_bar.update(current_percent - last_percent)
+                    last_percent = current_percent
+                    
+                    # 计算时间
+                    elapsed = time.time() - start_time
+                    epoch_elapsed = time.time() - epoch_start_time
+                    epoch_progress = (batch_idx + 1) / total_batches
+                    eta_epoch = epoch_elapsed / epoch_progress * (1 - epoch_progress) if epoch_progress > 0 else 0
+                    
+                    # 更新进度条信息
+                    progress_bar.set_postfix({
+                        'loss': f"{loss:.4f}",
+                        'lr': f"{scheduler.get_last_lr()[0]:.2e}" if batch_idx % TrainingConfig.gradient_accum_steps == 0 else f"{scheduler.get_last_lr()[0]:.2e}",
+                        '用时': f"{epoch_elapsed:.0f}s",
+                        '剩余': f"{eta_epoch:.0f}s",
+                        'batch': f"{batch_idx+1}/{total_batches}"
+                    })
+            
             # 更新学习率
             if (global_step + 1) % TrainingConfig.gradient_accum_steps == 0:
                 scheduler.step()
                 global_step += 1
-                
-                # 更新进度条
-                if local_rank == 0:
-                    elapsed = time.time() - start_time
-                    epoch_elapsed = time.time() - epoch_start_time
-                    steps_done = batch_idx + 1
-                    steps_remaining = len(train_loader) - steps_done
-                    eta_epoch = epoch_elapsed / steps_done * steps_remaining
-                    
-                    progress_bar.set_postfix({
-                        'loss': f"{loss:.4f}",
-                        'lr': f"{scheduler.get_last_lr()[0]:.2e}",
-                        '用时': f"{epoch_elapsed:.2f}s",
-                        '剩余': f"{eta_epoch:.2f}s"
-                    })
-                    progress_bar.update(1)
                 
                 # 日志记录
                 if global_step % TrainingConfig.log_interval == 0 and local_rank == 0:
@@ -310,20 +321,20 @@ def train_model(model, tokenizer, local_rank):
                     current_lr = scheduler.get_last_lr()[0]
                     avg_epoch_loss = epoch_loss / (batch_idx + 1)
                     # 计算总体训练进度和剩余时间
-                    progress = global_step / total_training_steps
-                    eta = elapsed / progress - elapsed if progress > 0 else 0
+                    total_progress = (epoch * total_batches + batch_idx + 1) / (TrainingConfig.epochs * total_batches)
+                    total_eta = elapsed / total_progress * (1 - total_progress) if total_progress > 0 else 0
                     
                     logger.info(
                         f"Step {global_step}/{total_training_steps} | "
                         f"Loss: {loss:.4f} | Avg Loss: {avg_epoch_loss:.4f} | LR: {current_lr:.2e} | "
-                        f"Elapsed: {elapsed:.2f}s | ETA: {eta:.2f}s | "
-                        f"Progress: {progress*100:.2f}%"
+                        f"Elapsed: {elapsed:.2f}s | 总体ETA: {total_eta:.2f}s | "
+                        f"总进度: {total_progress*100:.2f}%"
                     )
                 
                 # 验证
                 if global_step % TrainingConfig.eval_interval == 0:
                     if local_rank == 0:
-                        progress_bar.set_description(f"Epoch {epoch+1}/{TrainingConfig.epochs} (Evaluating)")
+                        progress_bar.set_description(f"Epoch {epoch+1}/{TrainingConfig.epochs} [验证中...]")
                     val_loss = evaluate(model, val_loader, local_rank)
                     if local_rank == 0:
                         logger.info(f"Validation Loss: {val_loss:.4f}")
@@ -331,6 +342,8 @@ def train_model(model, tokenizer, local_rank):
                 
                 # 保存检查点
                 if global_step % TrainingConfig.save_interval == 0:
+                    if local_rank == 0:
+                        progress_bar.set_description(f"Epoch {epoch+1}/{TrainingConfig.epochs} [保存中...]")
                     save_checkpoint(
                         model,
                         optimizer,
@@ -342,6 +355,7 @@ def train_model(model, tokenizer, local_rank):
                     )
                     if local_rank == 0:
                         logger.info(f"Checkpoint saved at step {global_step}")
+                        progress_bar.set_description(f"Epoch {epoch+1}/{TrainingConfig.epochs}")
         
         # 关闭进度条
         if local_rank == 0:
