@@ -103,3 +103,9 @@ python inference_moe.py --prompt "写一个故事：" \
 - `LinearScalingRotaryEmbedding`: 通过线性缩放位置索引扩展上下文窗口
 - `DynamicNTKScalingRotaryEmbedding`: 使用动态NTK缩放方法扩展上下文窗口
 - `YarnRotaryEmbedding`: 结合多种技术的高级上下文扩展方法 
+
+### 安装ai_client依赖包
+
+```bash
+pip install asyncio websockets vosk requests edge-tts pydub python-dotenv
+```
