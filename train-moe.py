@@ -10,6 +10,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer
+from tqdm import tqdm
 
 # 配置参数
 class TrainingConfig:
@@ -20,7 +21,7 @@ class TrainingConfig:
     max_seq_len = 512
     
     # 训练参数
-    batch_size = 4  # 每个GPU的batch size
+    batch_size = 8  # 每个GPU的batch size
     gradient_accum_steps = 2  # 梯度累积步数
     epochs = 5
     learning_rate = 5e-5
@@ -262,7 +263,15 @@ def train_model(model, tokenizer, local_rank):
         
         if local_rank == 0:
             logger.info(f"Epoch {epoch + 1}/{TrainingConfig.epochs}")
+            # 创建进度条
+            progress_bar = tqdm(
+                total=len(train_loader),
+                desc=f"Epoch {epoch+1}/{TrainingConfig.epochs}",
+                disable=local_rank != 0
+            )
+            epoch_start_time = time.time()
         
+        epoch_loss = 0
         for batch_idx, batch in enumerate(train_loader):
             # 训练步骤
             loss = train_step(
@@ -272,27 +281,53 @@ def train_model(model, tokenizer, local_rank):
                 TrainingConfig.gradient_accum_steps,
                 global_step
             )
+            epoch_loss += loss
             
             # 更新学习率
             if (global_step + 1) % TrainingConfig.gradient_accum_steps == 0:
                 scheduler.step()
                 global_step += 1
                 
+                # 更新进度条
+                if local_rank == 0:
+                    elapsed = time.time() - start_time
+                    epoch_elapsed = time.time() - epoch_start_time
+                    steps_done = batch_idx + 1
+                    steps_remaining = len(train_loader) - steps_done
+                    eta_epoch = epoch_elapsed / steps_done * steps_remaining
+                    
+                    progress_bar.set_postfix({
+                        'loss': f"{loss:.4f}",
+                        'lr': f"{scheduler.get_last_lr()[0]:.2e}",
+                        '用时': f"{epoch_elapsed:.2f}s",
+                        '剩余': f"{eta_epoch:.2f}s"
+                    })
+                    progress_bar.update(1)
+                
                 # 日志记录
                 if global_step % TrainingConfig.log_interval == 0 and local_rank == 0:
                     elapsed = time.time() - start_time
                     current_lr = scheduler.get_last_lr()[0]
+                    avg_epoch_loss = epoch_loss / (batch_idx + 1)
+                    # 计算总体训练进度和剩余时间
+                    progress = global_step / total_training_steps
+                    eta = elapsed / progress - elapsed if progress > 0 else 0
+                    
                     logger.info(
                         f"Step {global_step}/{total_training_steps} | "
-                        f"Loss: {loss:.4f} | LR: {current_lr:.2e} | "
-                        f"Elapsed: {elapsed:.2f}s"
+                        f"Loss: {loss:.4f} | Avg Loss: {avg_epoch_loss:.4f} | LR: {current_lr:.2e} | "
+                        f"Elapsed: {elapsed:.2f}s | ETA: {eta:.2f}s | "
+                        f"Progress: {progress*100:.2f}%"
                     )
                 
                 # 验证
                 if global_step % TrainingConfig.eval_interval == 0:
+                    if local_rank == 0:
+                        progress_bar.set_description(f"Epoch {epoch+1}/{TrainingConfig.epochs} (Evaluating)")
                     val_loss = evaluate(model, val_loader, local_rank)
                     if local_rank == 0:
                         logger.info(f"Validation Loss: {val_loss:.4f}")
+                        progress_bar.set_description(f"Epoch {epoch+1}/{TrainingConfig.epochs}")
                 
                 # 保存检查点
                 if global_step % TrainingConfig.save_interval == 0:
@@ -307,6 +342,12 @@ def train_model(model, tokenizer, local_rank):
                     )
                     if local_rank == 0:
                         logger.info(f"Checkpoint saved at step {global_step}")
+        
+        # 关闭进度条
+        if local_rank == 0:
+            progress_bar.close()
+            epoch_time = time.time() - epoch_start_time
+            logger.info(f"Epoch {epoch+1} 完成，用时 {epoch_time:.2f}s，平均损失: {epoch_loss/len(train_loader):.4f}")
     
     # 训练结束
     if local_rank == 0:
