@@ -14,13 +14,9 @@ import requests
 import edge_tts
 from pydub import AudioSegment
 from dotenv import load_dotenv
-import hashlib
-import tarfile
-import shutil
 
 # 加载.env文件中的环境变量
 load_dotenv()
-
 
 # 配置日志
 logging.basicConfig(
@@ -38,9 +34,6 @@ TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
 WS_URL = os.getenv("WS_URL", "ws://stream.kalaisai.com:80/ws/proxy")
 VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "vosk-model-cn-0.22")
 
-# VOSK模型下载信息
-VOSK_MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-cn-0.22.zip"
-VOSK_MODEL_MD5 = "c050f6849398ceecfa723cca69b8c67d"  # 根据实际MD5更新
 
 # 音频参数 - ESP32兼容
 ESP32_SAMPLE_RATE = 44100
@@ -56,173 +49,34 @@ def setup_directories():
     os.makedirs(PROCESSED_DIR, exist_ok=True)
     logger.info(f"已创建目录: {AUDIO_DIR}, {PROCESSED_DIR}")
 
-def check_model_integrity(model_path):
-    """检查模型是否完整可用"""
-    required_files = [
-        "am/final.mdl",
-        "conf/mfcc.conf",
-        "conf/model.conf",
-        "graph/words.txt"  # 使用words.txt替代phones.txt检查
-    ]
-    
-    for file in required_files:
-        full_path = os.path.join(model_path, file)
-        if not os.path.exists(full_path):
-            logger.error(f"模型文件不完整: 缺少 {file}")
-            return False
-    
-    return True
-
-def download_vosk_model(model_path):
-    """下载并安装VOSK模型"""
-    # 检查目标模型是否已存在
-    if os.path.exists(model_path) and check_model_integrity(model_path):
-        logger.info(f"模型已存在且完整: {model_path}")
-        return True
-    
-    # 如果存在但不完整，则删除重新下载
-    if os.path.exists(model_path):
-        logger.warning(f"模型存在但不完整，正在删除: {model_path}")
-        shutil.rmtree(model_path, ignore_errors=True)
-    
-    # 设置正确的模型名称
-    expected_extracted_name = "vosk-model-small-cn-0.22"
-    
-    try:
-        # 创建临时目录
-        temp_dir = "temp_model_download"
-        os.makedirs(temp_dir, exist_ok=True)
-        
-        # 获取模型文件名和保存路径
-        model_filename = os.path.basename(VOSK_MODEL_URL)
-        model_download_path = os.path.join(temp_dir, model_filename)
-        
-        logger.info(f"正在下载VOSK模型: {VOSK_MODEL_URL}")
-        
-        # 下载模型
-        response = requests.get(VOSK_MODEL_URL, stream=True)
-        response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        downloaded = 0
-        chunk_size = 8192
-        
-        # 保存模型文件并显示进度
-        with open(model_download_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    # 显示下载进度
-                    if total_size > 0:
-                        percent = int(downloaded * 100 / total_size)
-                        if percent % 10 == 0:  # 每10%显示一次
-                            logger.info(f"下载进度: {percent}% ({downloaded/1024/1024:.1f}MB/{total_size/1024/1024:.1f}MB)")
-        
-        logger.info(f"模型下载完成: {model_download_path}")
-        
-        # 解压模型
-        extracted_dir = None
-        if model_filename.endswith('.zip'):
-            import zipfile
-            logger.info("正在解压ZIP文件...")
-            with zipfile.ZipFile(model_download_path, 'r') as zip_ref:
-                # 获取压缩包中的根目录名
-                root_dirs = {item.split('/')[0] for item in zip_ref.namelist() if '/' in item}
-                if len(root_dirs) == 1:
-                    extracted_dir = next(iter(root_dirs))
-                    logger.info(f"检测到解压后的文件夹名称: {extracted_dir}")
-                # 解压到当前目录
-                zip_ref.extractall(".")
-        elif model_filename.endswith('.tar.gz') or model_filename.endswith('.tgz'):
-            logger.info("正在解压TAR文件...")
-            with tarfile.open(model_download_path) as tar:
-                # 获取压缩包中的根目录名
-                root_dirs = {name.split('/')[0] for name in tar.getnames() if '/' in name}
-                if len(root_dirs) == 1:
-                    extracted_dir = next(iter(root_dirs))
-                    logger.info(f"检测到解压后的文件夹名称: {extracted_dir}")
-                # 解压到当前目录
-                tar.extractall(".")
-        
-        # 如果解压后的目录名与要求的不同，进行重命名
-        if extracted_dir and extracted_dir != model_path:
-            logger.info(f"重命名模型目录: {extracted_dir} -> {model_path}")
-            # 如果目标目录已存在，先删除
-            if os.path.exists(model_path):
-                shutil.rmtree(model_path, ignore_errors=True)
-            # 重命名
-            os.rename(extracted_dir, model_path)
-        
-        # 清理临时文件
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        
-        # 确认模型已正确安装
-        if not check_model_integrity(model_path):
-            logger.error("模型安装后完整性检查失败")
-            return False
-        
-        logger.info(f"模型成功安装到: {model_path}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"下载模型时出错: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
-
 def vosk_speech_to_text(audio_path, model_path="vosk-model-cn-0.22"):
     """
     使用Vosk离线识别（需提前下载语言模型）
     :param model_path: 模型目录路径（中文小模型）
     """
     if not os.path.exists(model_path):
-        logger.warning(f"Vosk模型目录不存在: {model_path}")
-        # 尝试下载模型
-        if not download_vosk_model(model_path):
-            return "语音识别失败：模型未找到且无法下载"
-    
-    # 确保模型完整性
-    if not check_model_integrity(model_path):
-        logger.warning("模型不完整，尝试重新下载")
-        if not download_vosk_model(model_path):
-            return "语音识别失败：模型文件不完整且无法修复"
-    
-    try:
-        # 设置环境变量限制内存使用
-        os.environ['VOSK_DEBUG'] = '0'
-        os.environ['OPENBLAS_NUM_THREADS'] = '1'  # 限制BLAS线程数
+        logger.error(f"Vosk模型目录不存在: {model_path}")
+        return "语音识别失败：模型未找到"
         
-        # 加载模型
-        model = Model(model_path)
+    # 加载模型（需从https://alphacephei.com/vosk/models下载）
+    model = Model(model_path)
+    
+    with wave.open(audio_path, 'rb') as wf:
+        recognizer = KaldiRecognizer(model, wf.getframerate())
         
-        with wave.open(audio_path, 'rb') as wf:
-            # 获取音频采样率
-            sample_rate = wf.getframerate()
-            
-            # 确保采样率适合模型，否则采用默认16000
-            if sample_rate < 8000 or sample_rate > 48000:
-                logger.warning(f"异常采样率: {sample_rate}, 使用默认16000")
-                sample_rate = 16000
-                
-            recognizer = KaldiRecognizer(model, sample_rate)
-            
-            text = []
-            while True:
-                data = wf.readframes(4000)
-                if len(data) == 0:
-                    break
-                if recognizer.AcceptWaveform(data):
-                    result = json.loads(recognizer.Result())
-                    text.append(result.get("text", ""))
-            
-            final_result = json.loads(recognizer.FinalResult())
-            text.append(final_result.get("text", ""))
-            
-        return " ".join([t for t in text if t])  # 过滤空字符串
-    except Exception as e:
-        logger.error(f"语音识别过程出错: {e}")
-        return "语音识别失败：处理过程出错"
+        text = []
+        while True:
+            data = wf.readframes(4000)
+            if len(data) == 0:
+                break
+            if recognizer.AcceptWaveform(data):
+                result = json.loads(recognizer.Result())
+                text.append(result.get("text", ""))
+        
+        final_result = json.loads(recognizer.FinalResult())
+        text.append(final_result.get("text", ""))
+        
+    return " ".join(text)
 
 async def save_raw_to_wav(raw_data, wav_file_path):
     """将原始PCM数据保存为WAV文件"""
@@ -482,23 +336,13 @@ def main():
                       help="处理后文件存储目录")
     parser.add_argument("--api-key", type=str, 
                       help="DeepSeek API密钥")
-    parser.add_argument("--download-model", action="store_true",
-                      help="强制重新下载语音识别模型")
     
     args = parser.parse_args()
     
     # 更新全局变量
-    global DEEPSEEK_API_KEY, AUDIO_DIR, PROCESSED_DIR, VOSK_MODEL_PATH, WS_URL
+    global DEEPSEEK_API_KEY, AUDIO_DIR, PROCESSED_DIR
     if args.api_key:
         DEEPSEEK_API_KEY = args.api_key
-    if args.model:
-        VOSK_MODEL_PATH = args.model
-    if args.audio_dir:
-        AUDIO_DIR = args.audio_dir
-    if args.processed_dir:
-        PROCESSED_DIR = args.processed_dir
-    if args.url:
-        WS_URL = args.url
 
     # 创建必要的目录
     setup_directories()
@@ -507,70 +351,17 @@ def main():
     if not DEEPSEEK_API_KEY:
         logger.warning("未设置DeepSeek API密钥，将无法使用DeepSeek服务")
     
-    # 检查并下载模型
-    if args.download_model and os.path.exists(VOSK_MODEL_PATH):
-        logger.info(f"强制重新下载模型，删除旧模型: {VOSK_MODEL_PATH}")
-        shutil.rmtree(VOSK_MODEL_PATH, ignore_errors=True)
-    
-    if not os.path.exists(VOSK_MODEL_PATH) or not check_model_integrity(VOSK_MODEL_PATH):
-        logger.info("检测到模型不存在或不完整，开始下载...")
-        if download_vosk_model(VOSK_MODEL_PATH):
-            logger.info(f"模型下载并安装成功: {VOSK_MODEL_PATH}")
-        else:
-            logger.error("模型下载失败，请手动下载模型")
-            logger.error(f"模型下载地址: {VOSK_MODEL_URL}")
-            logger.error(f"下载后解压到: {VOSK_MODEL_PATH}")
-            sys.exit(1)
-    
     # 打印启动信息
     logger.info("=" * 50)
     logger.info("AI音频处理客户端启动")
     logger.info(f"WebSocket URL: {WS_URL}")
-    logger.info(f"Vosk模型路径: {VOSK_MODEL_PATH}")
+    logger.info(f"Vosk模型路径: {args.model}")
     logger.info(f"音频文件目录: {AUDIO_DIR}")
     logger.info(f"处理文件目录: {PROCESSED_DIR}")
     logger.info("=" * 50)
     
-    # 测试Vosk模型是否可用
-    try:
-        logger.info("测试Vosk模型加载...")
-        model = Model(VOSK_MODEL_PATH)
-        logger.info("Vosk模型加载成功!")
-    except Exception as e:
-        logger.error(f"Vosk模型加载失败: {e}")
-        logger.error("请尝试使用 --download-model 参数重新下载模型")
-        sys.exit(1)
-    
     # 启动异步循环
-    try:
-        asyncio.run(ai_backend_client(WS_URL))
-    except KeyboardInterrupt:
-        logger.info("程序被用户中断")
-    except Exception as e:
-        logger.error(f"WebSocket客户端运行出错: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        sys.exit(1)
+    asyncio.run(ai_backend_client(WS_URL))
 
 if __name__ == "__main__":
-    try:
-        logger.info("准备启动AI音频处理客户端...")
-        logger.info("Python版本: " + sys.version)
-        logger.info("当前工作目录: " + os.getcwd())
-        
-        # 检查必要的模块是否已安装
-        logger.info("检查关键模块...")
-        try:
-            from vosk import __version__ as vosk_version
-            logger.info(f"Vosk版本: {vosk_version}")
-        except (ImportError, AttributeError):
-            logger.info("无法获取Vosk版本信息")
-        
-        main()
-    except KeyboardInterrupt:
-        logger.info("程序被用户中断")
-    except Exception as e:
-        logger.critical(f"程序启动失败: {e}")
-        import traceback
-        logger.critical(traceback.format_exc())
-        sys.exit(1)
+    main()# AI音频处理客户端程序
