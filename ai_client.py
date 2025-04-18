@@ -36,7 +36,7 @@ VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "vosk-model-cn-0.22")
 
 
 # 音频参数 - ESP32兼容
-ESP32_SAMPLE_RATE = 44100
+ESP32_SAMPLE_RATE = 16000
 ESP32_CHANNELS = 1
 ESP32_SAMPLE_WIDTH = 2  # 16位
 
@@ -172,9 +172,9 @@ async def text_to_speech(text):
     except Exception as e:
         logger.error(f"TTS错误: {e}")
         return None
-    finally:
-        if 'temp_path' in locals() and os.path.exists(temp_path):
-            os.remove(temp_path)
+    # finally:
+    #     if 'temp_path' in locals() and os.path.exists(temp_path):
+    #         os.remove(temp_path)
 
 async def process_audio(raw_audio_data, session_id):
     """处理音频数据的完整流程"""
