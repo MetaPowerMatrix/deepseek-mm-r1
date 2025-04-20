@@ -87,6 +87,17 @@ async def save_raw_to_wav(raw_data, wav_file_path):
         wav_file.writeframes(raw_data)
     return wav_file_path
 
+import re
+
+def remove_markdown(text):
+    # 去除加粗、斜体等标记
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)  # **加粗** → 加粗
+    text = re.sub(r'\*(.*?)\*', r'\1', text)      # *斜体* → 斜体
+    text = re.sub(r'`(.*?)`', r'\1', text)        # `代码` → 代码
+    text = re.sub(r'#+\s*', '', text)             # 去除标题（### 标题 → 标题）
+    text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)  # 超链接[文字](url) → 文字
+    return text.strip()
+
 async def get_deepseek_response(prompt):
     """调用DeepSeek API获取回复"""
     try:
@@ -99,6 +110,7 @@ async def get_deepseek_response(prompt):
             return "抱歉，AI服务未配置正确。"
         
         # 构建完整消息历史
+        prompt = prompt + " 请直接输出纯文本，不要使用Markdown格式（如不要加粗、标题、代码块等）。"
         messages = conversation_history + [{"role": "user", "content": prompt}]
         
         headers = {
