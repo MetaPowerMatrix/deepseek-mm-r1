@@ -34,6 +34,8 @@ TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
 WS_URL = os.getenv("WS_URL", "ws://stream.kalaisai.com:80/ws/proxy")
 VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "vosk-model-cn-0.22")
 
+# 全局Vosk模型实例
+vosk_model = None
 
 # 音频参数 - ESP32兼容
 ESP32_SAMPLE_RATE = 16000
@@ -49,34 +51,72 @@ def setup_directories():
     os.makedirs(PROCESSED_DIR, exist_ok=True)
     logger.info(f"已创建目录: {AUDIO_DIR}, {PROCESSED_DIR}")
 
-def vosk_speech_to_text(audio_path, model_path="vosk-model-cn-0.22"):
-    """
-    使用Vosk离线识别（需提前下载语言模型）
-    :param model_path: 模型目录路径（中文小模型）
-    """
-    if not os.path.exists(model_path):
-        logger.error(f"Vosk模型目录不存在: {model_path}")
-        return "语音识别失败：模型未找到"
-        
-    # 加载模型（需从https://alphacephei.com/vosk/models下载）
-    model = Model(model_path)
+def initialize_vosk_model():
+    """初始化Vosk模型(全局单例)"""
+    global vosk_model
     
-    with wave.open(audio_path, 'rb') as wf:
-        recognizer = KaldiRecognizer(model, wf.getframerate())
+    if vosk_model is not None:
+        return vosk_model
+    
+    # 限制内存使用
+    os.environ['VOSK_DEBUG'] = '0'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    
+    try:
+        if not os.path.exists(VOSK_MODEL_PATH):
+            logger.error(f"Vosk模型目录不存在: {VOSK_MODEL_PATH}")
+            return None
         
-        text = []
-        while True:
-            data = wf.readframes(4000)
-            if len(data) == 0:
-                break
-            if recognizer.AcceptWaveform(data):
-                result = json.loads(recognizer.Result())
-                text.append(result.get("text", ""))
+        logger.info(f"正在加载Vosk模型: {VOSK_MODEL_PATH}")
+        vosk_model = Model(VOSK_MODEL_PATH)
+        logger.info("Vosk模型加载成功")
+        return vosk_model
+    except Exception as e:
+        logger.error(f"初始化Vosk模型失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
+
+def vosk_speech_to_text(audio_path):
+    """
+    使用Vosk离线识别（使用全局模型实例）
+    """
+    global vosk_model
+    
+    try:
+        # 确保模型已初始化
+        if vosk_model is None:
+            vosk_model = initialize_vosk_model()
+            if vosk_model is None:
+                return "语音识别失败：模型未找到或无法加载"
         
-        final_result = json.loads(recognizer.FinalResult())
-        text.append(final_result.get("text", ""))
-        
-    return " ".join(text)
+        with wave.open(audio_path, 'rb') as wf:
+            sample_rate = wf.getframerate()
+            # 检查采样率是否在合理范围内
+            if sample_rate < 8000 or sample_rate > 48000:
+                logger.warning(f"异常采样率: {sample_rate}, 使用默认16000")
+                sample_rate = 16000
+                
+            recognizer = KaldiRecognizer(vosk_model, sample_rate)
+            
+            text = []
+            while True:
+                data = wf.readframes(4000)  # 每次读取4000帧进行处理
+                if len(data) == 0:
+                    break
+                if recognizer.AcceptWaveform(data):
+                    result = json.loads(recognizer.Result())
+                    text.append(result.get("text", ""))
+            
+            final_result = json.loads(recognizer.FinalResult())
+            text.append(final_result.get("text", ""))
+            
+        return " ".join([t for t in text if t])  # 过滤空字符串
+    except Exception as e:
+        logger.error(f"语音识别过程出错: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return "语音识别失败：处理过程出错"
 
 async def save_raw_to_wav(raw_data, wav_file_path):
     """将原始PCM数据保存为WAV文件"""
@@ -156,10 +196,13 @@ async def get_deepseek_response(prompt):
 
 async def text_to_speech(text):
     """文本转语音"""
+    temp_file = None
+    
     try:
         # 生成临时文件路径
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         temp_path = os.path.join(PROCESSED_DIR, f"temp_tts_{timestamp}.mp3")
+        temp_file = temp_path
         logger.info(f"mp3生成临时文件路径: {temp_path}")
         
         # 1. 生成MP3
@@ -183,17 +226,27 @@ async def text_to_speech(text):
         
     except Exception as e:
         logger.error(f"TTS错误: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
-    # finally:
-    #     if 'temp_path' in locals() and os.path.exists(temp_path):
-    #         os.remove(temp_path)
-
+    finally:
+        # 删除临时MP3文件
+        try:
+            if temp_file and os.path.exists(temp_file):
+                os.remove(temp_file)
+                logger.debug(f"已删除临时TTS文件: {temp_file}")
+        except Exception as e:
+            logger.warning(f"删除临时TTS文件失败: {e}")
+            
 async def process_audio(raw_audio_data, session_id):
     """处理音频数据的完整流程"""
+    temp_files = []  # 记录临时文件以便清理
+    
     try:
         # 生成唯一文件名
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         wav_file_path = os.path.join(AUDIO_DIR, f"audio_{session_id}_{timestamp}.wav")
+        temp_files.append(wav_file_path)
         
         # 将原始数据保存为WAV文件
         await save_raw_to_wav(raw_audio_data, wav_file_path)
@@ -201,7 +254,8 @@ async def process_audio(raw_audio_data, session_id):
         
         # 转录音频
         logger.info("开始语音识别...")
-        transcript = vosk_speech_to_text(wav_file_path, VOSK_MODEL_PATH)
+        
+        transcript = vosk_speech_to_text(wav_file_path)
         if not transcript:
             logger.warning("语音识别失败，未能获取文本")
             return None, "抱歉，无法识别您的语音。"
@@ -211,7 +265,9 @@ async def process_audio(raw_audio_data, session_id):
         # 获取DeepSeek回复
         logger.info("正在获取AI回复...")
         ai_response = await get_deepseek_response(transcript)
-        logger.info(f"AI回复: {ai_response}")
+        # 清理markdown格式
+        ai_response = remove_markdown(ai_response)
+        logger.info(f"AI回复(已清理格式): {ai_response}")
 
         # 生成语音回复
         logger.info("正在生成语音回复...")
@@ -226,114 +282,168 @@ async def process_audio(raw_audio_data, session_id):
         return None, ai_response
     except Exception as e:
         logger.error(f"处理音频流程出错: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None, "处理请求时发生错误。"
+    finally:
+        # 清理临时文件
+        for file_path in temp_files:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    logger.debug(f"已清理临时文件: {file_path}")
+            except Exception as e:
+                logger.warning(f"清理临时文件失败: {file_path}, 错误: {e}")
 
 async def ai_backend_client(websocket_url):
     """
     AI后端客户端
     连接到WebSocket代理，接收音频数据，处理后返回结果
     """
-    logger.info(f"正在连接到WebSocket代理: {websocket_url}")
+    # 重连参数
+    max_reconnect_attempts = 10
+    reconnect_delay_seconds = 5
+    reconnect_attempt = 0
     
-    try:
-        async with websockets.connect(websocket_url) as websocket:
-            # 发送AI后端标识
-            await websocket.send(json.dumps({
-                "client_type": "ai_backend"
-            }))
+    # 预初始化Vosk模型
+    logger.info("预加载Vosk模型...")
+    initialize_vosk_model()
+    
+    while reconnect_attempt <= max_reconnect_attempts:
+        try:
+            if reconnect_attempt > 0:
+                logger.info(f"尝试重新连接 (尝试 {reconnect_attempt}/{max_reconnect_attempts})...")
+            else:
+                logger.info(f"正在连接到WebSocket代理: {websocket_url}")
             
-            # 接收连接确认
-            response = await websocket.recv()
-            data = json.loads(response)
-            logger.info(f"连接确认: {data.get('content', '')}")
-            
-            # 处理请求循环
-            while True:
-                try:
-                    # 接收消息
-                    message = await websocket.recv()
-                    
-                    # 判断消息类型 - 文本还是二进制
-                    if isinstance(message, str):
-                        # 文本消息 - 可能是控制命令
-                        try:
-                            data = json.loads(message)
-                            
-                            # 处理取消请求
-                            if data.get("type") == "cancel_processing":
-                                session_id = data.get("session_id")
-                                logger.info(f"取消处理会话 {session_id}")
-                                # 这里可以添加取消正在进行的处理逻辑
-                            
-                        except json.JSONDecodeError:
-                            logger.error(f"无法解析JSON消息: {message}")
-                    
-                    elif isinstance(message, bytes):
-                        # 直接处理二进制数据（音频）
-                        binary_data = message
-                        
-                        # 从二进制数据中提取会话ID（前16字节）和音频数据
-                        if len(binary_data) > 16:
-                            # 提取会话ID（UUID格式，存储在前16字节）
-                            session_id_bytes = binary_data[:16]
-                            raw_audio = binary_data[16:]
-                            
-                            try:
-                                # 将字节转换为UUID字符串
-                                session_id = uuid.UUID(bytes=session_id_bytes).hex
-                                logger.info(f"收到音频数据: 会话ID = {session_id}, 大小 = {len(raw_audio)} 字节")
-                                
-                                # 发送处理状态
-                                await websocket.send(json.dumps({
-                                    "type": "text",
-                                    "session_id": session_id,
-                                    "content": "正在处理音频..."
-                                }))
-                                
-                                # 处理音频数据
-                                audio_response, text_response = await process_audio(raw_audio, session_id)
-                                
-                                # 发送文本回复
-                                await websocket.send(json.dumps({
-                                    "type": "text",
-                                    "session_id": session_id,
-                                    "content": text_response
-                                }))
-                                
-                                # 发送音频回复 - 分块发送
-                                if audio_response:
-                                    chunk_size = 5120  # 大约5KB
-                                    for i in range(0, len(audio_response), chunk_size):
-                                        # 截取一块音频数据
-                                        audio_chunk = audio_response[i:i+chunk_size]
-                                        # 添加会话ID前缀
-                                        data_with_session = session_id_bytes + audio_chunk
-                                        # 发送
-                                        await websocket.send(data_with_session)
-                                        logger.info(f"发送音频回复块: 会话ID = {session_id}, 块大小 = {len(audio_chunk)} 字节")
-                                        # 短暂暂停，避免发送过快
-                                        await asyncio.sleep(0.05)
-                                
-                                logger.info(f"会话 {session_id} 处理完成")
-                                
-                            except ValueError:
-                                logger.error("无法解析会话ID")
-                        else:
-                            logger.error(f"收到无效的音频数据: 长度过短 ({len(binary_data)} 字节)")
+            # 连接到WebSocket
+            async with websockets.connect(websocket_url) as websocket:
+                # 重置重连计数
+                reconnect_attempt = 0
                 
-                except Exception as e:
-                    import sys
-                    exc_type, exc_obj, exc_tb = sys.exc_info()
-                    line_number = exc_tb.tb_lineno
-                    logger.error(f"处理消息时出错: {str(e)}, 出错行号: {line_number}")
+                # 发送AI后端标识
+                await websocket.send(json.dumps({
+                    "client_type": "ai_backend"
+                }))
+                
+                # 接收连接确认
+                response = await websocket.recv()
+                data = json.loads(response)
+                logger.info(f"连接确认: {data.get('content', '')}")
+                
+                # 处理请求循环
+                while True:
+                    try:
+                        # 接收消息
+                        message = await websocket.recv()
+                        
+                        # 判断消息类型 - 文本还是二进制
+                        if isinstance(message, str):
+                            # 文本消息 - 可能是控制命令
+                            try:
+                                data = json.loads(message)
+                                
+                                # 处理取消请求
+                                if data.get("type") == "cancel_processing":
+                                    session_id = data.get("session_id")
+                                    logger.info(f"取消处理会话 {session_id}")
+                                    # 这里可以添加取消正在进行的处理逻辑
+                                
+                            except json.JSONDecodeError:
+                                logger.error(f"无法解析JSON消息: {message}")
+                        
+                        elif isinstance(message, bytes):
+                            # 直接处理二进制数据（音频）
+                            binary_data = message
+                            
+                            # 从二进制数据中提取会话ID（前16字节）和音频数据
+                            if len(binary_data) > 16:
+                                # 提取会话ID（UUID格式，存储在前16字节）
+                                session_id_bytes = binary_data[:16]
+                                raw_audio = binary_data[16:]
+                                
+                                try:
+                                    # 将字节转换为UUID字符串
+                                    session_id = uuid.UUID(bytes=session_id_bytes).hex
+                                    logger.info(f"收到音频数据: 会话ID = {session_id}, 大小 = {len(raw_audio)} 字节")
+                                    
+                                    # 发送处理状态
+                                    await websocket.send(json.dumps({
+                                        "type": "text",
+                                        "session_id": session_id,
+                                        "content": "正在处理音频..."
+                                    }))
+                                    
+                                    # 处理音频数据
+                                    audio_response, text_response = await process_audio(raw_audio, session_id)
+                                    
+                                    # 发送文本回复
+                                    await websocket.send(json.dumps({
+                                        "type": "text",
+                                        "session_id": session_id,
+                                        "content": text_response
+                                    }))
+                                    
+                                    # 发送音频回复 - 分块发送
+                                    if audio_response:
+                                        chunk_size = 5120  # 大约5KB
+                                        for i in range(0, len(audio_response), chunk_size):
+                                            # 截取一块音频数据
+                                            audio_chunk = audio_response[i:i+chunk_size]
+                                            # 添加会话ID前缀
+                                            data_with_session = session_id_bytes + audio_chunk
+                                            # 发送
+                                            await websocket.send(data_with_session)
+                                            logger.info(f"发送音频回复块: 会话ID = {session_id}, 块大小 = {len(audio_chunk)} 字节")
+                                            # 短暂暂停，避免发送过快
+                                            await asyncio.sleep(0.05)
+                                    
+                                    logger.info(f"会话 {session_id} 处理完成")
+                                    
+                                except ValueError:
+                                    logger.error("无法解析会话ID")
+                            else:
+                                logger.error(f"收到无效的音频数据: 长度过短 ({len(binary_data)} 字节)")
                     
-    except websockets.exceptions.ConnectionClosed:
-        logger.info("WebSocket连接已关闭")
-    except Exception as e:
-        import sys
-        exc_type, exc_obj, exc_tb = sys.exc_info()
-        line_number = exc_tb.tb_lineno
-        logger.error(f"WebSocket连接错误: {str(e)}, 出错行号: {line_number}")
+                    except Exception as e:
+                        import sys
+                        exc_type, exc_obj, exc_tb = sys.exc_info()
+                        line_number = exc_tb.tb_lineno
+                        logger.error(f"处理消息时出错: {str(e)}, 出错行号: {line_number}")
+                        
+        except websockets.exceptions.ConnectionClosed as e:
+            reconnect_attempt += 1
+            logger.warning(f"WebSocket连接已关闭: {str(e)}")
+            if reconnect_attempt <= max_reconnect_attempts:
+                logger.info(f"将在 {reconnect_delay_seconds} 秒后尝试重新连接...")
+                await asyncio.sleep(reconnect_delay_seconds)
+                # 指数退避算法增加重连延迟
+                reconnect_delay_seconds = min(60, reconnect_delay_seconds * 1.5)
+            else:
+                logger.error(f"达到最大重连次数 ({max_reconnect_attempts})，停止重连")
+                break
+                
+        except Exception as e:
+            reconnect_attempt += 1
+            import sys
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            line_number = exc_tb.tb_lineno
+            logger.error(f"WebSocket连接错误: {str(e)}, 出错行号: {line_number}")
+            
+            if reconnect_attempt <= max_reconnect_attempts:
+                logger.info(f"将在 {reconnect_delay_seconds} 秒后尝试重新连接...")
+                # 收集垃圾
+                import gc
+                gc.collect()
+                
+                await asyncio.sleep(reconnect_delay_seconds)
+                # 指数退避算法增加重连延迟
+                reconnect_delay_seconds = min(60, reconnect_delay_seconds * 1.5)
+            else:
+                logger.error(f"达到最大重连次数 ({max_reconnect_attempts})，停止重连")
+                break
+    
+    logger.error("WebSocket客户端已停止运行")
 
 def main():
     # 参数解析
