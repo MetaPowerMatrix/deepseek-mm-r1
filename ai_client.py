@@ -11,10 +11,9 @@ import argparse
 import websockets
 from vosk import Model, KaldiRecognizer
 import requests
-import edge_tts
 from pydub import AudioSegment
 from dotenv import load_dotenv
-from gtts import gTTS
+from tetos.edge import EdgeSpeaker
 
 # 加载.env文件中的环境变量
 load_dotenv()
@@ -34,6 +33,9 @@ PROCESSED_DIR = os.getenv("PROCESSED_DIR", "processed_files")
 TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
 WS_URL = os.getenv("WS_URL", "ws://stream.kalaisai.com:80/ws/proxy")
 VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "vosk-model-cn-0.22")
+
+# 初始化Tetos EdgeSpeaker
+edge_speaker = EdgeSpeaker()
 
 # 全局Vosk模型实例
 vosk_model = None
@@ -195,8 +197,9 @@ async def get_deepseek_response(prompt):
         logger.error(f"调用DeepSeek API错误: {e}")
         return "抱歉，处理您的请求时出现了错误。"
 
+
 async def text_to_speech(text):
-    """文本转语音"""
+    """文本转语音，使用Tetos的EdgeSpeaker"""
     temp_file = None
     
     try:
@@ -206,20 +209,18 @@ async def text_to_speech(text):
         temp_file = temp_path
         logger.info(f"mp3生成临时文件路径: {temp_path}")
         
-        # 1. 生成MP3
-        # communicate = edge_tts.Communicate(text, TTS_VOICE)
-        # await communicate.save(temp_path)
-
-        tts = gTTS(text, lang="zh-cn")
-        tts.save(temp_path)
+        # 使用Tetos的EdgeSpeaker生成语音
+        global edge_speaker
+        edge_speaker.say(text, temp_path, voice=TTS_VOICE, rate="-0%", volume="+0%")
+        logger.info(f"Tetos生成语音文件完成: {temp_path}")
         
-        # 2. 用pydub处理
+        # 用pydub处理
         audio = AudioSegment.from_file(temp_path, format="mp3")
         audio = audio.set_frame_rate(ESP32_SAMPLE_RATE)
         audio = audio.set_channels(ESP32_CHANNELS)
         audio = audio.set_sample_width(ESP32_SAMPLE_WIDTH)
         
-        # 3. 导出为PCM
+        # 导出为PCM
         pcm_data = audio.raw_data
         logger.info(f"生成PCM数据: {len(pcm_data)} 字节")
 
@@ -241,6 +242,7 @@ async def text_to_speech(text):
                 logger.debug(f"已删除临时TTS文件: {temp_file}")
         except Exception as e:
             logger.warning(f"删除临时TTS文件失败: {e}")
+
             
 async def process_audio(raw_audio_data, session_id):
     """处理音频数据的完整流程"""
