@@ -14,6 +14,7 @@ import requests
 import edge_tts
 from pydub import AudioSegment
 from dotenv import load_dotenv
+from gtts import gTTS
 
 # 加载.env文件中的环境变量
 load_dotenv()
@@ -206,8 +207,11 @@ async def text_to_speech(text):
         logger.info(f"mp3生成临时文件路径: {temp_path}")
         
         # 1. 生成MP3
-        communicate = edge_tts.Communicate(text, TTS_VOICE)
-        await communicate.save(temp_path)
+        # communicate = edge_tts.Communicate(text, TTS_VOICE)
+        # await communicate.save(temp_path)
+
+        tts = gTTS(text, lang="zh-cn")
+        tts.save(temp_path)
         
         # 2. 用pydub处理
         audio = AudioSegment.from_file(temp_path, format="mp3")
