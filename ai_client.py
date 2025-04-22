@@ -124,7 +124,7 @@ def vosk_speech_to_text(audio_path):
         logger.error(traceback.format_exc())
         return "语音识别失败：处理过程出错"
 
-def save_raw_to_wav(raw_data, wav_file_path):
+async def save_raw_to_wav(raw_data, wav_file_path):
     """将原始PCM数据保存为WAV文件"""
     with wave.open(wav_file_path, 'wb') as wav_file:
         wav_file.setnchannels(ESP32_CHANNELS)
@@ -144,7 +144,7 @@ def remove_markdown(text):
     text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)  # 超链接[文字](url) → 文字
     return text.strip()
 
-def get_deepseek_response(prompt):
+async def get_deepseek_response(prompt):
     """调用DeepSeek API获取回复"""
     try:
         # 保存对话历史以维持上下文
@@ -201,7 +201,7 @@ def get_deepseek_response(prompt):
         return "抱歉，处理您的请求时出现了错误。"
 
 
-def text_to_speech(text):
+async def text_to_speech(text):
     """文本转语音，使用Tetos的EdgeSpeaker"""
     temp_file = None
     
@@ -214,7 +214,7 @@ def text_to_speech(text):
         
         # 使用Tetos的EdgeSpeaker生成语音
         global volc_speaker
-        volc_speaker.say(text, temp_path, lang="zh-CN")
+        volc_speaker.synthesize(text, temp_path, lang="zh-CN")
         logger.info(f"Tetos生成语音文件完成: {temp_path}")
         
         # 用pydub处理
@@ -247,7 +247,7 @@ def text_to_speech(text):
             logger.warning(f"删除临时TTS文件失败: {e}")
 
             
-def process_audio(raw_audio_data, session_id):
+async def process_audio(raw_audio_data, session_id):
     """处理音频数据的完整流程"""
     temp_files = []  # 记录临时文件以便清理
     
@@ -258,7 +258,7 @@ def process_audio(raw_audio_data, session_id):
         temp_files.append(wav_file_path)
         
         # 将原始数据保存为WAV文件
-        save_raw_to_wav(raw_audio_data, wav_file_path)
+        await save_raw_to_wav(raw_audio_data, wav_file_path)
         logger.info(f"已保存WAV文件: {wav_file_path}")
         
         # 转录音频
@@ -273,14 +273,14 @@ def process_audio(raw_audio_data, session_id):
         
         # 获取DeepSeek回复
         logger.info("正在获取AI回复...")
-        ai_response = get_deepseek_response(transcript)
+        ai_response = await get_deepseek_response(transcript)
         # 清理markdown格式
         ai_response = remove_markdown(ai_response)
         logger.info(f"AI回复(已清理格式): {ai_response}")
 
         # 生成语音回复
         logger.info("正在生成语音回复...")
-        audio_response = text_to_speech(ai_response)
+        audio_response = await text_to_speech(ai_response)
 
         # 如果成功生成语音
         if audio_response:
@@ -384,7 +384,7 @@ async def ai_backend_client(websocket_url):
                                     }))
                                     
                                     # 处理音频数据
-                                    audio_response, text_response = process_audio(raw_audio, session_id)
+                                    audio_response, text_response = await process_audio(raw_audio, session_id)
                                     
                                     # 发送文本回复
                                     await websocket.send(json.dumps({
