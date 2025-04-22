@@ -13,7 +13,7 @@ from vosk import Model, KaldiRecognizer
 import requests
 from pydub import AudioSegment
 from dotenv import load_dotenv
-from tetos.edge import EdgeSpeaker
+from tetos.volc import VolcSpeaker
 
 # 加载.env文件中的环境变量
 load_dotenv()
@@ -33,9 +33,12 @@ PROCESSED_DIR = os.getenv("PROCESSED_DIR", "processed_files")
 TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-XiaoxiaoNeural")
 WS_URL = os.getenv("WS_URL", "ws://stream.kalaisai.com:80/ws/proxy")
 VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "vosk-model-cn-0.22")
+VOLC_ACCESS_KEY = os.getenv("VOLC_ACCESS_KEY", "")
+VOLC_SECRET_KEY = os.getenv("VOLC_SECRET_KEY", "")
+VOLC_APP_KEY = os.getenv("VOLC_APP_KEY", "")
 
 # 初始化Tetos EdgeSpeaker
-edge_speaker = EdgeSpeaker()
+volc_speaker = VolcSpeaker(access_key=VOLC_ACCESS_KEY, secret_key=VOLC_SECRET_KEY, app_key=VOLC_APP_KEY)
 
 # 全局Vosk模型实例
 vosk_model = None
@@ -210,8 +213,8 @@ async def text_to_speech(text):
         logger.info(f"mp3生成临时文件路径: {temp_path}")
         
         # 使用Tetos的EdgeSpeaker生成语音
-        global edge_speaker
-        edge_speaker.say(text, temp_path, voice=TTS_VOICE, rate="-0%", volume="+0%")
+        global volc_speaker
+        volc_speaker.say(text, temp_path, lang="zh-CN")
         logger.info(f"Tetos生成语音文件完成: {temp_path}")
         
         # 用pydub处理
