@@ -124,7 +124,7 @@ def vosk_speech_to_text(audio_path):
         logger.error(traceback.format_exc())
         return "语音识别失败：处理过程出错"
 
-async def save_raw_to_wav(raw_data, wav_file_path):
+def save_raw_to_wav(raw_data, wav_file_path):
     """将原始PCM数据保存为WAV文件"""
     with wave.open(wav_file_path, 'wb') as wav_file:
         wav_file.setnchannels(ESP32_CHANNELS)
@@ -144,7 +144,7 @@ def remove_markdown(text):
     text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', text)  # 超链接[文字](url) → 文字
     return text.strip()
 
-async def get_deepseek_response(prompt):
+def get_deepseek_response(prompt):
     """调用DeepSeek API获取回复"""
     try:
         # 保存对话历史以维持上下文
@@ -247,7 +247,7 @@ def text_to_speech(text):
             logger.warning(f"删除临时TTS文件失败: {e}")
 
             
-async def process_audio(raw_audio_data, session_id):
+def process_audio(raw_audio_data, session_id):
     """处理音频数据的完整流程"""
     temp_files = []  # 记录临时文件以便清理
     
@@ -258,7 +258,7 @@ async def process_audio(raw_audio_data, session_id):
         temp_files.append(wav_file_path)
         
         # 将原始数据保存为WAV文件
-        await save_raw_to_wav(raw_audio_data, wav_file_path)
+        save_raw_to_wav(raw_audio_data, wav_file_path)
         logger.info(f"已保存WAV文件: {wav_file_path}")
         
         # 转录音频
@@ -273,7 +273,7 @@ async def process_audio(raw_audio_data, session_id):
         
         # 获取DeepSeek回复
         logger.info("正在获取AI回复...")
-        ai_response = await get_deepseek_response(transcript)
+        ai_response = get_deepseek_response(transcript)
         # 清理markdown格式
         ai_response = remove_markdown(ai_response)
         logger.info(f"AI回复(已清理格式): {ai_response}")
@@ -384,7 +384,7 @@ async def ai_backend_client(websocket_url):
                                     }))
                                     
                                     # 处理音频数据
-                                    audio_response, text_response = await process_audio(raw_audio, session_id)
+                                    audio_response, text_response = process_audio(raw_audio, session_id)
                                     
                                     # 发送文本回复
                                     await websocket.send(json.dumps({
