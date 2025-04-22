@@ -214,8 +214,8 @@ async def text_to_speech(text):
         
         # 使用Tetos的EdgeSpeaker生成语音
         global volc_speaker
-        volc_speaker.synthesize(text, temp_path, lang="zh-CN")
-        logger.info(f"Tetos生成语音文件完成: {temp_path}")
+        length = await volc_speaker.synthesize(text, temp_path, lang="zh-CN")
+        logger.info(f"Tetos生成语音文件完成: {temp_path}, 长度: {length}")
         
         # 用pydub处理
         audio = AudioSegment.from_file(temp_path, format="mp3")
