@@ -201,7 +201,7 @@ async def get_deepseek_response(prompt):
         return "抱歉，处理您的请求时出现了错误。"
 
 
-async def text_to_speech(text):
+def text_to_speech(text):
     """文本转语音，使用Tetos的EdgeSpeaker"""
     temp_file = None
     
@@ -280,7 +280,7 @@ async def process_audio(raw_audio_data, session_id):
 
         # 生成语音回复
         logger.info("正在生成语音回复...")
-        audio_response = await text_to_speech(ai_response)
+        audio_response = text_to_speech(ai_response)
 
         # 如果成功生成语音
         if audio_response:
