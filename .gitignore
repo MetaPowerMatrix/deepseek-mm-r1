@@ -26,3 +26,9 @@ products.json
 products.xlsx
 标签打印文档.docx
 .DS_Store
+
+models/
+textures/
+tex/
+
+app.log

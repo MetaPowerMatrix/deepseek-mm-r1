@@ -13,15 +13,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 设置 OpenGL 版本为 2.1
-loadPrcFileData("", "gl-version 2 1")
-
-# 使用离屏渲染
-loadPrcFileData("", "window-type offscreen")
-
 class ChatApp(ShowBase):
     def __init__(self):
         loadPrcFileData("", "audio-library-name null")
+        loadPrcFileData("", "gl-version 3 2")
+        loadPrcFileData("", "load-file-type p3assimp")
 
         ShowBase.__init__(self)
 
@@ -37,11 +33,23 @@ class ChatApp(ShowBase):
             # 设置背景颜色
             self.setBackgroundColor(0.1, 0.1, 0.3)
 
+            # 设置光照
+            dlight = self.render.attachNewNode("dlight")
+            dlight.setPos(10, -10, 10)
+            dlight.lookAt(0, 0, 0)
+            # dlight.setColor((1, 1, 1, 1))  # 设置光照颜色为白色
+            # dlight.setStrength(60)  # 设置光照强度
+            # dlight.setShadowCaster(True)  # 启用阴影
+
             # 加载并设置立方体
-            self.cube = self.loader.loadModel("models/environment.glb")
+            self.cube = self.loader.loadModel("models/rocket.egg")
             self.cube.reparentTo(self.render)
             self.cube.setPos(0, 10, 0)
-            self.cube.setScale(2)
+            self.cube.setScale(1)
+
+            # 手动加载材质文件
+            # self.cube.setTexture(self.loader.loadTexture("textures/feature3.jpeg"))
+
 
             # 启动动画任务
             self.taskMgr.add(self.rotate_cube, "rotate_cube")
