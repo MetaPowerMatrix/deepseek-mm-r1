@@ -404,7 +404,7 @@ def initialize_audio_categories():
         logger.info("已从voice_cat.json加载音频分类信息")
     else:
         # 如果voice_cat.json文件不存在，读取音频文件并生成分类信息
-        assets_dir = Path("/data/assets")
+        assets_dir = Path("/root/smart-yolo/MegaTTS3/assets")
         male_dir = assets_dir / "男"
         female_dir = assets_dir / "女"
         
