@@ -62,11 +62,11 @@ def check_service_status():
             logger.error(f"聊天服务状态检查失败: {response.status_code}")
 
         # 检查语音转文字服务状态
-        response = requests.get(SPEECH_TO_TEXT_STATUS_URL)
-        if response.status_code == 200:
-            logger.info(f"语音转文字服务状态: {response.json()}")
-        else:
-            logger.error(f"语音转文字服务状态检查失败: {response.status_code}")
+        # response = requests.get(SPEECH_TO_TEXT_STATUS_URL)
+        # if response.status_code == 200:
+        #     logger.info(f"语音转文字服务状态: {response.json()}")
+        # else:
+        #     logger.error(f"语音转文字服务状态检查失败: {response.status_code}")
 
     except Exception as e:
         logger.error(f"服务状态检查失败: {e}")
