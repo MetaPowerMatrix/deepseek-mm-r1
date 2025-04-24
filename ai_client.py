@@ -74,6 +74,17 @@ def check_service_status():
 async def speech_to_text(audio_path):
     """调用本地服务接口将语音转换为文本"""
     try:
+        logger.info(f"开始语音转文字请求: {audio_path}")
+        
+        # 检查文件是否存在
+        if not os.path.exists(audio_path):
+            logger.error(f"音频文件不存在: {audio_path}")
+            return None
+            
+        # 记录文件大小
+        file_size = os.path.getsize(audio_path)
+        logger.info(f"音频文件大小: {file_size} 字节")
+        
         with open(audio_path, 'rb') as audio_file:
             # 为文件指定名称、内容类型和文件对象
             files = {
@@ -86,14 +97,32 @@ async def speech_to_text(audio_path):
                 'Accept': 'application/json'
             }
             
+            logger.info(f"发送请求到: {SPEECH_TO_TEXT_URL}")
+            logger.info(f"请求头: {headers}")
+            logger.info(f"文件名: {os.path.basename(audio_path)}")
+            
             response = requests.post(SPEECH_TO_TEXT_URL, files=files, headers=headers)
+            
+            logger.info(f"收到响应: 状态码={response.status_code}")
+            
             if response.status_code == 200:
-                return response.json().get("text", "")
+                result = response.json()
+                # 根据实际的返回格式解析
+                if result.get("code") == 0:
+                    transcription = result.get("data", {}).get("transcription", "")
+                    language = result.get("data", {}).get("language", "")
+                    logger.info(f"语音转文字成功，结果: {transcription}, 语言: {language}")
+                    return transcription
+                else:
+                    logger.error(f"API返回错误: {result.get('message', '未知错误')}")
+                    return None
             else:
-                logger.error(f"语音转文字失败: {response.status_code}, 响应内容: {response.text}")
+                logger.error(f"语音转文字失败: 状态码={response.status_code}, 响应内容={response.text}")
                 return None
     except Exception as e:
-        logger.error(f"语音转文字接口调用失败: {e}")
+        logger.error(f"语音转文字接口调用失败: {str(e)}")
+        import traceback
+        logger.error(f"异常堆栈: {traceback.format_exc()}")
         return None
 
 async def get_chat_response(prompt):
