@@ -136,13 +136,15 @@ async def text_to_speech(text, reference_audio_file):
 async def select_voice_category(ai_response):
     """调用chat接口，选择最适合回复的语音分类"""
     try:
-        # 构造详细的输入信息
-        categories_info = "\n".join([f"{category}: {', '.join(files)}" for category, files in AUDIO_CATEGORIES.items()])
+        # 获取所有可用的分类名称（文件名）
+        available_categories = list(AUDIO_CATEGORIES.keys())
+        categories_info = ", ".join(available_categories)
+        
         prompt = (
-            f"请为以下回复选择最适合的语音分类。以下是可用的语音分类及其对应的音频文件：\n"
+            f"请为以下回复选择最适合的语音分类。以下是可用的语音分类名称：\n"
             f"{categories_info}\n"
             f"回复内容：\n{ai_response}\n"
-            f"请根据回复内容的情感、语气和上下文，选择最适合的语音分类。"
+            f"请根据回复内容的情感、语气和上下文，选择一个最适合的语音分类名称。"
         )
         
         # 构造请求数据
@@ -165,7 +167,7 @@ async def select_voice_category(ai_response):
                 return selected_category
             else:
                 logger.warning(f"选择的语音分类无效: {selected_category}")
-                return None
+                return available_categories[0] if available_categories else None
         else:
             logger.error(f"chat接口调用失败: {response.status_code}")
             return None
@@ -218,7 +220,7 @@ async def process_audio(raw_audio_data, session_id):
             selected_category = list(AUDIO_CATEGORIES.keys())[0]  # 默认使用第一个分类
 
         # 根据分类获取参考音频文件
-        reference_audio_file = AUDIO_CATEGORIES[selected_category][0]
+        reference_audio_file = AUDIO_CATEGORIES[selected_category]
         
         # 生成语音回复
         logger.info("正在生成语音回复...")
@@ -408,13 +410,19 @@ def initialize_audio_categories():
         male_dir = assets_dir / "男"
         female_dir = assets_dir / "女"
         
-        if male_dir.exists() and male_dir.is_dir():
-            male_files = [str(file) for file in male_dir.glob("*.wav")]
-            AUDIO_CATEGORIES["男"] = male_files
+        AUDIO_CATEGORIES = {}
         
+        # 处理"男"目录下的音频文件
+        if male_dir.exists() and male_dir.is_dir():
+            for file_path in male_dir.glob("*.wav"):
+                file_name = file_path.stem  # 获取文件名（不含扩展名）
+                AUDIO_CATEGORIES[file_name] = str(file_path)
+        
+        # 处理"女"目录下的音频文件
         if female_dir.exists() and female_dir.is_dir():
-            female_files = [str(file) for file in female_dir.glob("*.wav")]
-            AUDIO_CATEGORIES["女"] = female_files
+            for file_path in female_dir.glob("*.wav"):
+                file_name = file_path.stem  # 获取文件名（不含扩展名）
+                AUDIO_CATEGORIES[file_name] = str(file_path)
         
         # 将分类信息保存到voice_cat.json文件
         with open(voice_cat_file, "w", encoding="utf-8") as f:
