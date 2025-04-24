@@ -1,4 +1,3 @@
-data/
 *.pdf
 *.pt
 *.json
@@ -20,15 +19,12 @@ tags/
 prod_imgs/
 .DS_Store/
 data/
-
-qrcode.jpg
-products.json
-products.xlsx
-标签打印文档.docx
-.DS_Store
-
-models/
+audio_files/
+processed_files/
+fonts/
 textures/
+models/
 tex/
 
+.DS_Store
 app.log

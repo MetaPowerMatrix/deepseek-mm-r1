@@ -2,15 +2,14 @@ import asyncio
 import json
 import logging
 import os
-import sys
 import datetime
 import wave
 import uuid
 import argparse
 import websockets
 import requests
-from pydub import AudioSegment
 from dotenv import load_dotenv
+from pathlib import Path
 
 # 加载.env文件中的环境变量
 load_dotenv()
@@ -42,6 +41,9 @@ MEGATTS_STATUS_URL = f"{API_URL}/megatts/status"
 
 # 会话历史记录
 conversation_history = []
+
+# 全局变量
+AUDIO_CATEGORIES = {}
 
 def setup_directories():
     """确保必要的目录存在"""
@@ -110,13 +112,13 @@ async def get_chat_response(prompt):
         logger.error(f"聊天接口调用失败: {e}")
         return None
 
-async def text_to_speech(text):
+async def text_to_speech(text, reference_audio_file):
     """调用本地服务接口将文本转换为语音"""
     try:
         data = {
-            "wav_path": "/root/smart-yolo/MegaTTS3/assets/御姐配音.wav",
+            "wav_path": reference_audio_file,
             "input_text": text,
-            "output_dir": "/root/smart-yolo/MegaTTS3/assets/output",
+            "output_dir": "/root/smart-yolo/MegaTTS3/output",
         }
         response = requests.post(TEXT_TO_SPEECH_URL, json=data)
         if response.status_code == 200:
@@ -129,6 +131,46 @@ async def text_to_speech(text):
             return None
     except Exception as e:
         logger.error(f"文字转语音接口调用失败: {e}")
+        return None
+
+async def select_voice_category(ai_response):
+    """调用chat接口，选择最适合回复的语音分类"""
+    try:
+        # 构造详细的输入信息
+        categories_info = "\n".join([f"{category}: {', '.join(files)}" for category, files in AUDIO_CATEGORIES.items()])
+        prompt = (
+            f"请为以下回复选择最适合的语音分类。以下是可用的语音分类及其对应的音频文件：\n"
+            f"{categories_info}\n"
+            f"回复内容：\n{ai_response}\n"
+            f"请根据回复内容的情感、语气和上下文，选择最适合的语音分类。"
+        )
+        
+        # 构造请求数据
+        data = {
+            "prompt": prompt,
+            "history": conversation_history,
+            "max_length": 2048,
+            "temperature": 0.7,
+            "top_p": 0.9
+        }
+        
+        # 调用chat接口
+        response = requests.post(CHAT_URL, json=data)
+        if response.status_code == 200:
+            result = response.json()
+            selected_category = result.get("response", "").strip()
+            
+            # 检查选择的分类是否有效
+            if selected_category in AUDIO_CATEGORIES:
+                return selected_category
+            else:
+                logger.warning(f"选择的语音分类无效: {selected_category}")
+                return None
+        else:
+            logger.error(f"chat接口调用失败: {response.status_code}")
+            return None
+    except Exception as e:
+        logger.error(f"选择语音分类时出错: {e}")
         return None
 
 async def process_audio(raw_audio_data, session_id):
@@ -167,9 +209,20 @@ async def process_audio(raw_audio_data, session_id):
         
         logger.info(f"AI回复: {ai_response}")
 
+        # 选择最适合的语音分类
+        selected_category = await select_voice_category(ai_response)
+        if selected_category:
+            logger.info(f"选择的语音分类: {selected_category}")
+        else:
+            logger.warning("未能选择有效的语音分类，使用默认分类")
+            selected_category = list(AUDIO_CATEGORIES.keys())[0]  # 默认使用第一个分类
+
+        # 根据分类获取参考音频文件
+        reference_audio_file = AUDIO_CATEGORIES[selected_category][0]
+        
         # 生成语音回复
         logger.info("正在生成语音回复...")
-        audio_response = await text_to_speech(ai_response)
+        audio_response = await text_to_speech(ai_response, reference_audio_file)
 
         # 如果成功生成语音
         if audio_response:
@@ -339,20 +392,50 @@ async def ai_backend_client(websocket_url):
     
     logger.error("WebSocket客户端已停止运行")
 
+def initialize_audio_categories():
+    """初始化音频分类"""
+    global AUDIO_CATEGORIES
+    voice_cat_file = Path("voice_cat.json")
+    
+    if voice_cat_file.exists():
+        # 如果voice_cat.json文件存在，直接加载分类信息
+        with open(voice_cat_file, "r", encoding="utf-8") as f:
+            AUDIO_CATEGORIES = json.load(f)
+        logger.info("已从voice_cat.json加载音频分类信息")
+    else:
+        # 如果voice_cat.json文件不存在，读取音频文件并生成分类信息
+        assets_dir = Path("/data/assets")
+        male_dir = assets_dir / "男"
+        female_dir = assets_dir / "女"
+        
+        if male_dir.exists() and male_dir.is_dir():
+            male_files = [str(file) for file in male_dir.glob("*.wav")]
+            AUDIO_CATEGORIES["男"] = male_files
+        
+        if female_dir.exists() and female_dir.is_dir():
+            female_files = [str(file) for file in female_dir.glob("*.wav")]
+            AUDIO_CATEGORIES["女"] = female_files
+        
+        # 将分类信息保存到voice_cat.json文件
+        with open(voice_cat_file, "w", encoding="utf-8") as f:
+            json.dump(AUDIO_CATEGORIES, f, ensure_ascii=False, indent=4)
+        logger.info("已生成并保存音频分类信息到voice_cat.json")
+
 def main():
     # 参数解析
     parser = argparse.ArgumentParser(description="AI音频处理客户端")
-    parser.add_argument("--url", type=str, default="ws://localhost:8000/api/proxy", 
-                      help="WebSocket代理URL")
     parser.add_argument("--audio-dir", type=str, default="audio_files",
                       help="音频文件存储目录")
     parser.add_argument("--processed-dir", type=str, default="processed_files",
                       help="处理后文件存储目录")
     
-    args = parser.parse_args()
+    # args = parser.parse_args()
     
     # 创建必要的目录
     setup_directories()
+    
+    # 初始化音频分类
+    initialize_audio_categories()
     
     # 检查服务状态
     check_service_status()

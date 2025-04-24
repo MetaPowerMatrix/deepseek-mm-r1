@@ -1,9 +1,10 @@
 from direct.showbase.ShowBase import ShowBase
 from direct.gui.DirectGui import DirectFrame, DirectEntry, DirectButton, DirectLabel
 from direct.task.Task import Task
-from panda3d.core import TextNode, loadPrcFileData
+from panda3d.core import TextNode, loadPrcFileData, CardMaker, NodePath, Texture, Vec4
+from direct.gui.OnscreenImage import OnscreenImage
 import logging
-from pathlib import Path
+import os
 
 # 配置日志系统
 logging.basicConfig(
@@ -30,8 +31,18 @@ class ChatApp(ShowBase):
     def setup_scene(self):
         """初始化3D场景"""
         try:
-            # 设置背景颜色
-            self.setBackgroundColor(0.1, 0.1, 0.3)
+            # 设置背景图片
+            background_path = os.path.join(os.path.dirname(__file__), "textures", "background.png")
+            imageObject = OnscreenImage(image=background_path, pos=(0, 10, 0), parent = self.cam, scale = 3.5)
+            # Note the inclusion of the "parent" keyword.
+            # The scale is likely not correct; I leave it to you to find a proper value for it!
+            imageObject.setBin("background", 0)
+            imageObject.setDepthWrite(False)
+
+            # image = self.loadImageAsPlane(background_path)
+            # image.reparentTo(self.cam)
+            # image.setTransparency(TransparencyAttrib.MAlpha)
+            # self.cam2dp.node().getDisplayRegion(0).setSort(-20)
 
             # 设置光照
             dlight = self.render.attachNewNode("dlight")
@@ -42,14 +53,16 @@ class ChatApp(ShowBase):
             # dlight.setShadowCaster(True)  # 启用阴影
 
             # 加载并设置立方体
-            self.cube = self.loader.loadModel("models/rocket.egg")
+            model_path = os.path.join(os.path.dirname(__file__), "models", "rocket.egg")
+            logger.info(f"Loading model from: {model_path}")
+            self.cube = self.loader.loadModel(model_path)
             self.cube.reparentTo(self.render)
-            self.cube.setPos(0, 10, 0)
+            self.cube.setPos(0.5, 15, 0)
             self.cube.setScale(1)
 
-            # 手动加载材质文件
-            # self.cube.setTexture(self.loader.loadTexture("textures/feature3.jpeg"))
-
+            # 调整相机位置
+            self.camera.setPos(0, -20, 10)  # 调整相机的位置
+            self.camera.lookAt(0, 0, 0)  # 调整相机的视角
 
             # 启动动画任务
             self.taskMgr.add(self.rotate_cube, "rotate_cube")
@@ -78,10 +91,14 @@ class ChatApp(ShowBase):
         """初始化聊天窗口"""
         # 创建聊天窗口背景
         self.chat_frame = DirectFrame(
-            frameSize=(-0.3, 0.3, -0.4, 0.1),
-            frameColor=(0.1, 0.1, 0.1, 0.8),
-            pos=(0.7, 0, -0.5)
+            frameSize=(-0.5, 0.5, -0.5, 0.5),  # 调整高度为窗口的一半
+            frameColor=(0, 0, 0, 0.6),  # 背景设置为黑色半透明
+            pos=(-0.82, 0, -0.5)  # 调整位置到窗口左下角
         )
+
+        # 使用支持中文的字体文件
+        font_path = os.path.join(os.path.dirname(__file__), "fonts", "SimHei.ttf")  # 替换为你的字体文件路径
+        font = self.loader.loadFont(font_path)
 
         # 创建聊天显示区域
         self.chat_display = DirectLabel(
@@ -91,8 +108,9 @@ class ChatApp(ShowBase):
             text_scale=0.05,
             text_fg=(1, 1, 1, 1),
             frameColor=(0, 0, 0, 0),
-            pos=(-0.28, 0, 0.05),
-            scale=1.0
+            pos=(-0.48, 0, 0.45),  # 调整位置
+            scale=1.0,
+            text_font=font  # 设置字体文件
         )
 
         # 创建消息输入区域
@@ -100,10 +118,11 @@ class ChatApp(ShowBase):
             parent=self.chat_frame,
             initialText="",
             focus=1,
-            width=20,
-            pos=(-0.28, 0, -0.1),
+            width=15,  # 调整宽度
+            pos=(-0.48, 0, -0.45),  # 调整位置
             scale=0.05,
-            command=self.on_send
+            command=self.on_send,
+            text_font=font  # 设置字体文件
         )
 
         # 创建发送按钮
@@ -111,11 +130,12 @@ class ChatApp(ShowBase):
             parent=self.chat_frame,
             text="发送",
             scale=0.05,
-            pos=(0.2, 0, -0.1),
-            command=self.on_send
+            pos=(0.4, 0, -0.45),  # 调整位置
+            command=self.on_send,
+            text_font=font  # 设置字体文件
         )
 
-    def on_send(self, text):
+    def on_send(self):
         """处理消息发送"""
         message = self.message_input.get()
         if not message:
