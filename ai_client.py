@@ -75,11 +75,17 @@ async def speech_to_text(audio_path):
     """调用本地服务接口将语音转换为文本"""
     try:
         with open(audio_path, 'rb') as audio_file:
-            files = {'file': audio_file}
+            # 为文件指定名称、内容类型和文件对象
+            files = {
+                'file': (os.path.basename(audio_path), 
+                         audio_file, 
+                         'audio/wav')  # 指定 MIME 类型为 audio/wav
+            }
+            
             headers = {
                 'Accept': 'application/json'
             }
-            # Content-Type 会由 requests 自动设置为 multipart/form-data
+            
             response = requests.post(SPEECH_TO_TEXT_URL, files=files, headers=headers)
             if response.status_code == 200:
                 return response.json().get("text", "")
