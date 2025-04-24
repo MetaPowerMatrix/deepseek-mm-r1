@@ -127,6 +127,8 @@ async def speech_to_text(audio_path):
 
 async def get_chat_response(prompt):
     """调用本地服务接口获取聊天回复"""
+    global conversation_history  # 声明使用全局变量
+    
     try:
         data = {
             "prompt": prompt,
@@ -135,20 +137,44 @@ async def get_chat_response(prompt):
             "temperature": 0.7,
             "top_p": 0.9
         }
+        
+        logger.info(f"发送聊天请求，prompt: {prompt[:50]}...")
         response = requests.post(CHAT_URL, json=data)
+        
         if response.status_code == 200:
             result = response.json()
-            assistant_response = result.get("response", "")
-            conversation_history.append({"role": "user", "content": prompt})
-            conversation_history.append({"role": "assistant", "content": assistant_response})
-            if len(conversation_history) > 10:
-                conversation_history = conversation_history[-10:]
-            return assistant_response
+            
+            # 正确解析API返回格式
+            if result.get("code") == 0:
+                # 从data.response中获取助手回复
+                assistant_response = result.get("data", {}).get("response", "")
+                # 获取API返回的历史记录
+                new_history = result.get("data", {}).get("history", [])
+                
+                # 如果API返回了历史记录，直接使用；否则，手动更新
+                if new_history:
+                    conversation_history = new_history
+                else:
+                    # 更新全局对话历史
+                    conversation_history.append({"role": "user", "content": prompt})
+                    conversation_history.append({"role": "assistant", "content": assistant_response})
+                
+                # 保持对话历史在合理长度
+                if len(conversation_history) > 10:
+                    conversation_history = conversation_history[-10:]
+                    
+                logger.info(f"聊天请求成功，回复: {assistant_response[:50]}...")
+                return assistant_response
+            else:
+                logger.error(f"API返回错误: {result.get('message', '未知错误')}")
+                return None
         else:
-            logger.error(f"聊天接口调用失败: {response.status_code}")
+            logger.error(f"聊天接口调用失败: 状态码={response.status_code}, 响应内容={response.text}")
             return None
     except Exception as e:
-        logger.error(f"聊天接口调用失败: {e}")
+        logger.error(f"聊天接口调用失败: {str(e)}")
+        import traceback
+        logger.error(f"异常堆栈: {traceback.format_exc()}")
         return None
 
 async def text_to_speech(text, reference_audio_file):
