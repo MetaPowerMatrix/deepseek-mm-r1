@@ -54,19 +54,19 @@ def setup_directories():
 def check_service_status():
     """检查本地服务接口的状态"""
     try:
-        # 检查语音转文字服务状态
-        response = requests.get(SPEECH_TO_TEXT_STATUS_URL)
-        if response.status_code == 200:
-            logger.info(f"语音转文字服务状态: {response.json()}")
-        else:
-            logger.error(f"语音转文字服务状态检查失败: {response.status_code}")
-
         # 检查聊天服务状态
         response = requests.get(CHAT_STATUS_URL)
         if response.status_code == 200:
             logger.info(f"聊天服务状态: {response.json()}")
         else:
             logger.error(f"聊天服务状态检查失败: {response.status_code}")
+
+        # 检查语音转文字服务状态
+        response = requests.get(SPEECH_TO_TEXT_STATUS_URL)
+        if response.status_code == 200:
+            logger.info(f"语音转文字服务状态: {response.json()}")
+        else:
+            logger.error(f"语音转文字服务状态检查失败: {response.status_code}")
 
     except Exception as e:
         logger.error(f"服务状态检查失败: {e}")
