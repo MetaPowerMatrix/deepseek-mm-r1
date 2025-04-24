@@ -76,11 +76,15 @@ async def speech_to_text(audio_path):
     try:
         with open(audio_path, 'rb') as audio_file:
             files = {'file': audio_file}
-            response = requests.post(SPEECH_TO_TEXT_URL, files=files)
+            headers = {
+                'Accept': 'application/json'
+            }
+            # Content-Type 会由 requests 自动设置为 multipart/form-data
+            response = requests.post(SPEECH_TO_TEXT_URL, files=files, headers=headers)
             if response.status_code == 200:
                 return response.json().get("text", "")
             else:
-                logger.error(f"语音转文字失败: {response.status_code}")
+                logger.error(f"语音转文字失败: {response.status_code}, 响应内容: {response.text}")
                 return None
     except Exception as e:
         logger.error(f"语音转文字接口调用失败: {e}")
