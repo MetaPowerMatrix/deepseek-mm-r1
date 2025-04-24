@@ -180,22 +180,41 @@ async def get_chat_response(prompt):
 async def text_to_speech(text, reference_audio_file):
     """调用本地服务接口将文本转换为语音"""
     try:
+        logger.info(f"发送文字转语音请求: 文本长度={len(text)}, 参考音频={reference_audio_file}")
+        
         data = {
             "wav_path": reference_audio_file,
             "input_text": text,
             "output_dir": "/root/smart-yolo/MegaTTS3/output",
         }
+        
         response = requests.post(TEXT_TO_SPEECH_URL, json=data)
+        
+        logger.info(f"收到响应: 状态码={response.status_code}")
+        
         if response.status_code == 200:
-            # 返回json数据{'output_file': output_file},读取这个wav文件转为PCM音频数据返回
-            output_file = response.json().get('output_file')
-            with open(output_file, 'rb') as wav_file:
-                return wav_file.read()
+            result = response.json()
+            output_file = result.get('output_file')
+            input_text = result.get('input_text')
+            process_time = result.get('process_time')
+            
+            logger.info(f"文字转语音成功: 输出文件={output_file}, 处理时间={process_time}")
+            
+            if output_file and os.path.exists(output_file):
+                with open(output_file, 'rb') as wav_file:
+                    audio_data = wav_file.read()
+                    logger.info(f"读取音频文件成功: 大小={len(audio_data)}字节")
+                    return audio_data
+            else:
+                logger.error(f"输出文件不存在或路径无效: {output_file}")
+                return None
         else:
-            logger.error(f"文字转语音失败: {response.status_code}")
+            logger.error(f"文字转语音失败: 状态码={response.status_code}, 响应内容={response.text}")
             return None
     except Exception as e:
-        logger.error(f"文字转语音接口调用失败: {e}")
+        logger.error(f"文字转语音接口调用失败: {str(e)}")
+        import traceback
+        logger.error(f"异常堆栈: {traceback.format_exc()}")
         return None
 
 async def select_voice_category(ai_response):
@@ -276,17 +295,19 @@ async def process_audio(raw_audio_data, session_id):
         
         logger.info(f"AI回复: {ai_response}")
 
-        # 选择最适合的语音分类
-        selected_category = await select_voice_category(ai_response)
-        if selected_category:
-            logger.info(f"选择的语音分类: {selected_category}")
-        else:
-            logger.warning("未能选择有效的语音分类，使用默认分类")
-            selected_category = list(AUDIO_CATEGORIES.keys())[0]  # 默认使用第一个分类
+        # # 选择最适合的语音分类
+        # selected_category = await select_voice_category(ai_response)
+        # if selected_category:
+        #     logger.info(f"选择的语音分类: {selected_category}")
+        # else:
+        #     logger.warning("未能选择有效的语音分类，使用默认分类")
+        #     selected_category = list(AUDIO_CATEGORIES.keys())[0]  # 默认使用第一个分类
 
-        # 根据分类获取参考音频文件
-        reference_audio_file = AUDIO_CATEGORIES[selected_category]
-        
+        # # 根据分类获取参考音频文件
+        # reference_audio_file = AUDIO_CATEGORIES[selected_category]
+
+        reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
+
         # 生成语音回复
         logger.info("正在生成语音回复...")
         audio_response = await text_to_speech(ai_response, reference_audio_file)
@@ -423,7 +444,9 @@ async def ai_backend_client(websocket_url):
                         import sys
                         exc_type, exc_obj, exc_tb = sys.exc_info()
                         line_number = exc_tb.tb_lineno
-                        logger.error(f"处理消息时出错: {str(e)}, 出错行号: {line_number}")
+                        # 打印太频繁，限制一下
+                        if line_number % 5000 == 0:
+                            logger.error(f"处理消息时出错: {str(e)}, 出错行号: {line_number}")
                         
         except websockets.exceptions.ConnectionClosed as e:
             reconnect_attempt += 1
