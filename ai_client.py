@@ -30,9 +30,10 @@ WS_URL = os.getenv("WS_URL", "ws://stream.kalaisai.com:80/ws/proxy")
 
 # 本地服务接口URL
 API_URL = "http://127.0.0.1:8000/api/v1"
+TTS_API_URL = "http://127.0.0.1:5000/process"
 SPEECH_TO_TEXT_URL = f"{API_URL}/speech-to-text"
 CHAT_URL = f"{API_URL}/chat"
-TEXT_TO_SPEECH_URL = f"{API_URL}/text-to-speech"
+TEXT_TO_SPEECH_URL = f"{TTS_API_URL}"
 
 # 状态接口URL
 SPEECH_TO_TEXT_STATUS_URL = f"{API_URL}/speech-to-text/status"
@@ -64,13 +65,6 @@ def check_service_status():
             logger.info(f"聊天服务状态: {response.json()}")
         else:
             logger.error(f"聊天服务状态检查失败: {response.status_code}")
-
-        # 检查文字转语音服务状态
-        response = requests.get(MEGATTS_STATUS_URL)
-        if response.status_code == 200:
-            logger.info(f"文字转语音服务状态: {response.json()}")
-        else:
-            logger.error(f"文字转语音服务状态检查失败: {response.status_code}")
 
     except Exception as e:
         logger.error(f"服务状态检查失败: {e}")
@@ -120,15 +114,16 @@ async def text_to_speech(text):
     """调用本地服务接口将文本转换为语音"""
     try:
         data = {
-            "text": text,
-            "voice": "default",
-            "p_w": 2.0,
-            "t_w": 3.0,
-            "seed": 42
+            "wav_path": "/root/smart-yolo/MegaTTS3/assets/御姐配音.wav",
+            "input_text": text,
+            "output_dir": "/root/smart-yolo/MegaTTS3/assets/output",
         }
         response = requests.post(TEXT_TO_SPEECH_URL, json=data)
         if response.status_code == 200:
-            return response.content  # 返回二进制音频数据
+            # 返回json数据{'output_file': output_file},读取这个wav文件转为PCM音频数据返回
+            output_file = response.json().get('output_file')
+            with open(output_file, 'rb') as wav_file:
+                return wav_file.read()
         else:
             logger.error(f"文字转语音失败: {response.status_code}")
             return None
