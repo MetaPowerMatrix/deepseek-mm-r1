@@ -32,18 +32,27 @@ API_URL = "http://127.0.0.1:8000/api/v1"
 TTS_API_URL = "http://127.0.0.1:5000/process"
 SPEECH_TO_TEXT_URL = f"{API_URL}/speech-to-text"
 CHAT_URL = f"{API_URL}/chat"
+QWEN_CHAT_URL = f"{API_URL}/chat/qwen"
+MINICPM_URL = f"{API_URL}/minicpm"
 TEXT_TO_SPEECH_URL = f"{TTS_API_URL}"
 
 # 状态接口URL
 SPEECH_TO_TEXT_STATUS_URL = f"{API_URL}/speech-to-text/status"
 CHAT_STATUS_URL = f"{API_URL}/chat/status"
 MEGATTS_STATUS_URL = f"{API_URL}/megatts/status"
+MINICPM_STATUS_URL = f"{API_URL}/minicpm/status"
+QWEN_CHAT_STATUS_URL = f"{API_URL}/qwen/status"
 
 # 会话历史记录
 conversation_history = []
 
 # 全局变量
 AUDIO_CATEGORIES = {}
+
+# 全局配置变量
+USE_MINICPM = False
+USE_QWEN = False
+SKIP_TTS = False
 
 def setup_directories():
     """确保必要的目录存在"""
@@ -55,18 +64,34 @@ def check_service_status():
     """检查本地服务接口的状态"""
     try:
         # 检查聊天服务状态
-        response = requests.get(CHAT_STATUS_URL)
-        if response.status_code == 200:
-            logger.info(f"聊天服务状态: {response.json()}")
+        if USE_QWEN:
+            response = requests.get(QWEN_CHAT_STATUS_URL)
+            if response.status_code == 200:
+                logger.info(f"Qwen聊天服务状态: {response.json()}")
+            else:
+                logger.error(f"Qwen聊天服务状态检查失败: {response.status_code}")
         else:
-            logger.error(f"聊天服务状态检查失败: {response.status_code}")
+            response = requests.get(CHAT_STATUS_URL)
+            if response.status_code == 200:
+                logger.info(f"Deepseek聊天服务状态: {response.json()}")
+            else:
+                logger.error(f"Deepseek聊天服务状态检查失败: {response.status_code}")
+
+        # 检查MiniCPM服务状态
+        if USE_MINICPM:
+            response = requests.get(MINICPM_STATUS_URL)
+            if response.status_code == 200:
+                logger.info(f"MiniCPM服务状态: {response.json()}")
+            else:
+                logger.error(f"MiniCPM服务状态检查失败: {response.status_code}")
 
         # 检查语音转文字服务状态
-        # response = requests.get(SPEECH_TO_TEXT_STATUS_URL)
-        # if response.status_code == 200:
-        #     logger.info(f"语音转文字服务状态: {response.json()}")
-        # else:
-        #     logger.error(f"语音转文字服务状态检查失败: {response.status_code}")
+        if not USE_MINICPM:
+            response = requests.get(SPEECH_TO_TEXT_STATUS_URL)
+            if response.status_code == 200:
+                logger.info(f"语音转文字服务状态: {response.json()}")
+            else:
+                logger.error(f"语音转文字服务状态检查失败: {response.status_code}")
 
     except Exception as e:
         logger.error(f"服务状态检查失败: {e}")
@@ -126,8 +151,12 @@ async def speech_to_text(audio_path):
         return None
 
 async def get_chat_response(prompt):
-    """调用本地服务接口获取聊天回复"""
-    global conversation_history  # 声明使用全局变量
+    """调用聊天接口获取回复，根据配置选择Qwen或Deepseek"""
+    global conversation_history
+    
+    # 确定要使用的URL
+    url = QWEN_CHAT_URL if USE_QWEN else CHAT_URL
+    model_name = "Qwen" if USE_QWEN else "Deepseek"
     
     try:
         data = {
@@ -138,8 +167,8 @@ async def get_chat_response(prompt):
             "top_p": 0.9
         }
         
-        logger.info(f"发送聊天请求，prompt: {prompt[:50]}...")
-        response = requests.post(CHAT_URL, json=data)
+        logger.info(f"发送聊天请求到{model_name}，prompt: {prompt[:50]}...")
+        response = requests.post(url, json=data)
         
         if response.status_code == 200:
             result = response.json()
@@ -163,16 +192,16 @@ async def get_chat_response(prompt):
                 if len(conversation_history) > 10:
                     conversation_history = conversation_history[-10:]
                     
-                logger.info(f"聊天请求成功，回复: {assistant_response[:50]}...")
+                logger.info(f"{model_name}聊天请求成功，回复: {assistant_response[:50]}...")
                 return assistant_response
             else:
-                logger.error(f"API返回错误: {result.get('message', '未知错误')}")
+                logger.error(f"{model_name} API返回错误: {result.get('message', '未知错误')}")
                 return None
         else:
-            logger.error(f"聊天接口调用失败: 状态码={response.status_code}, 响应内容={response.text}")
+            logger.error(f"{model_name}聊天接口调用失败: 状态码={response.status_code}, 响应内容={response.text}")
             return None
     except Exception as e:
-        logger.error(f"聊天接口调用失败: {str(e)}")
+        logger.error(f"{model_name}聊天接口调用失败: {str(e)}")
         import traceback
         logger.error(f"异常堆栈: {traceback.format_exc()}")
         return None
@@ -260,7 +289,7 @@ async def select_voice_category(ai_response):
         return None
 
 async def process_audio(raw_audio_data, session_id):
-    """处理音频数据的完整流程"""
+    """处理音频数据的完整流程，支持选择不同的处理模式"""
     temp_files = []  # 记录临时文件以便清理
     
     try:
@@ -277,48 +306,77 @@ async def process_audio(raw_audio_data, session_id):
             wav_file.writeframes(raw_audio_data)
         logger.info(f"已保存WAV文件: {wav_file_path}")
         
-        # 转录音频
-        logger.info("开始语音识别...")
-        transcript = await speech_to_text(wav_file_path)
-        if not transcript:
-            logger.warning("语音识别失败，未能获取文本")
-            return None, "抱歉，无法识别您的语音。"
+        # MiniCPM模式：直接将音频发送给MiniCPM处理
+        if USE_MINICPM:
+            logger.info("使用MiniCPM模式处理音频...")
+            text_response, audio_response, error = await call_minicpm(wav_file_path)
+            
+            if error:
+                logger.error(f"MiniCPM处理失败: {error}")
+                return None, f"处理失败: {error}"
+                
+            if not text_response:
+                logger.warning("MiniCPM未返回文本回复")
+                return audio_response, "抱歉，未能获取文本回复。"
+                
+            # 如果MiniCPM已经生成了音频，直接返回
+            if audio_response and not SKIP_TTS:
+                logger.info("使用MiniCPM生成的音频回复")
+                return audio_response, text_response
+                
+            # 如果需要跳过TTS或MiniCPM没有生成音频，处理文本回复
+            if SKIP_TTS:
+                logger.info("跳过TTS步骤，仅返回文本回复")
+                return None, text_response
+                
+            # 否则，使用常规TTS生成音频
+            logger.info("MiniCPM未生成音频，使用MegaTTS生成")
+            reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
+            audio_response = await text_to_speech(text_response, reference_audio_file)
+            
+            if audio_response:
+                return audio_response, text_response
+            else:
+                return None, text_response
         
-        logger.info(f"语音识别结果: {transcript}")
-        
-        # 获取聊天回复
-        logger.info("正在获取AI回复...")
-        ai_response = await get_chat_response(transcript)
-        if not ai_response:
-            logger.warning("获取AI回复失败")
-            return None, "抱歉，无法获取AI回复。"
-        
-        logger.info(f"AI回复: {ai_response}")
-
-        # # 选择最适合的语音分类
-        # selected_category = await select_voice_category(ai_response)
-        # if selected_category:
-        #     logger.info(f"选择的语音分类: {selected_category}")
-        # else:
-        #     logger.warning("未能选择有效的语音分类，使用默认分类")
-        #     selected_category = list(AUDIO_CATEGORIES.keys())[0]  # 默认使用第一个分类
-
-        # # 根据分类获取参考音频文件
-        # reference_audio_file = AUDIO_CATEGORIES[selected_category]
-
-        reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
-
-        # 生成语音回复
-        logger.info("正在生成语音回复...")
-        audio_response = await text_to_speech(ai_response, reference_audio_file)
-
-        # 如果成功生成语音
-        if audio_response:
-            logger.info(f"已生成语音回复: {len(audio_response)} 字节")
-            return audio_response, ai_response
-        
-        logger.warning("语音合成失败")
-        return None, ai_response
+        # 常规模式：语音转文字 -> 聊天 -> 文字转语音
+        else:
+            # 转录音频
+            logger.info("开始语音识别...")
+            transcript = await speech_to_text(wav_file_path)
+            if not transcript:
+                logger.warning("语音识别失败，未能获取文本")
+                return None, "抱歉，无法识别您的语音。"
+            
+            logger.info(f"语音识别结果: {transcript}")
+            
+            # 获取聊天回复
+            logger.info("正在获取AI回复...")
+            ai_response = await get_chat_response(transcript)
+            if not ai_response:
+                logger.warning("获取AI回复失败")
+                return None, "抱歉，无法获取AI回复。"
+            
+            logger.info(f"AI回复: {ai_response}")
+            
+            # 如果需要跳过TTS步骤
+            if SKIP_TTS:
+                logger.info("跳过TTS步骤，仅返回文本回复")
+                return None, ai_response
+            
+            # 生成语音回复
+            logger.info("正在生成语音回复...")
+            reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
+            audio_response = await text_to_speech(ai_response, reference_audio_file)
+            
+            # 如果成功生成语音
+            if audio_response:
+                logger.info(f"已生成语音回复: {len(audio_response)} 字节")
+                return audio_response, ai_response
+            
+            logger.warning("语音合成失败")
+            return None, ai_response
+            
     except Exception as e:
         logger.error(f"处理音频流程出错: {e}")
         import traceback
@@ -524,8 +582,22 @@ def main():
                       help="音频文件存储目录")
     parser.add_argument("--processed-dir", type=str, default="processed_files",
                       help="处理后文件存储目录")
+    parser.add_argument("--use-minicpm", action="store_true", 
+                      help="使用MiniCPM大模型进行语音处理")
+    parser.add_argument("--use-qwen", action="store_true", 
+                      help="使用Qwen聊天接口，而不是默认的Deepseek")
+    parser.add_argument("--skip-tts", action="store_true", 
+                      help="跳过文本转语音步骤")
     
-    # args = parser.parse_args()
+    args = parser.parse_args()
+    
+    # 设置全局配置
+    global USE_MINICPM, USE_QWEN, SKIP_TTS, AUDIO_DIR, PROCESSED_DIR
+    USE_MINICPM = args.use_minicpm
+    USE_QWEN = args.use_qwen
+    SKIP_TTS = args.skip_tts
+    AUDIO_DIR = args.audio_dir
+    PROCESSED_DIR = args.processed_dir
     
     # 创建必要的目录
     setup_directories()
@@ -542,10 +614,70 @@ def main():
     logger.info(f"WebSocket URL: {WS_URL}")
     logger.info(f"音频文件目录: {AUDIO_DIR}")
     logger.info(f"处理文件目录: {PROCESSED_DIR}")
+    logger.info(f"使用MiniCPM: {USE_MINICPM}")
+    logger.info(f"使用Qwen: {USE_QWEN}")
+    logger.info(f"跳过TTS: {SKIP_TTS}")
     logger.info("=" * 50)
     
     # 启动异步循环
     asyncio.run(ai_backend_client(WS_URL))
+
+# 添加调用MiniCPM的函数
+async def call_minicpm(audio_path):
+    """调用MiniCPM处理音频文件，直接返回文本回复和可选的音频回复"""
+    try:
+        logger.info(f"开始调用MiniCPM处理音频: {audio_path}")
+        
+        # 检查文件是否存在
+        if not os.path.exists(audio_path):
+            logger.error(f"音频文件不存在: {audio_path}")
+            return None, None, "音频文件不存在"
+        
+        # 读取音频文件
+        with open(audio_path, 'rb') as audio_file:
+            files = {
+                'file': (os.path.basename(audio_path), audio_file, 'audio/wav')
+            }
+            
+            headers = {
+                'Accept': 'application/json'
+            }
+            
+            logger.info(f"发送请求到MiniCPM: {MINICPM_URL}")
+            
+            response = requests.post(MINICPM_URL, files=files, headers=headers)
+            
+            logger.info(f"收到MiniCPM响应: 状态码={response.status_code}")
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                if result.get("code") == 0:
+                    text_response = result.get("data", {}).get("text_response", "")
+                    audio_file_path = result.get("data", {}).get("audio_file", "")
+                    
+                    logger.info(f"MiniCPM处理成功，文本回复: {text_response[:50]}...")
+                    
+                    # 如果有音频文件，读取它
+                    audio_response = None
+                    if audio_file_path and os.path.exists(audio_file_path):
+                        with open(audio_file_path, 'rb') as f:
+                            audio_response = f.read()
+                        logger.info(f"读取MiniCPM生成的音频文件: {audio_file_path}")
+                    
+                    return text_response, audio_response, None
+                else:
+                    error_msg = result.get("message", "MiniCPM处理失败")
+                    logger.error(f"MiniCPM返回错误: {error_msg}")
+                    return None, None, error_msg
+            else:
+                logger.error(f"MiniCPM请求失败: 状态码={response.status_code}, 响应内容={response.text}")
+                return None, None, f"MiniCPM请求失败: {response.status_code}"
+    except Exception as e:
+        logger.error(f"调用MiniCPM时出错: {str(e)}")
+        import traceback
+        logger.error(f"异常堆栈: {traceback.format_exc()}")
+        return None, None, f"调用MiniCPM时出错: {str(e)}"
 
 if __name__ == "__main__":
     main()
