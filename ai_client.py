@@ -578,10 +578,6 @@ def initialize_audio_categories():
 def main():
     # 参数解析
     parser = argparse.ArgumentParser(description="AI音频处理客户端")
-    parser.add_argument("--audio-dir", type=str, default="audio_files",
-                      help="音频文件存储目录")
-    parser.add_argument("--processed-dir", type=str, default="processed_files",
-                      help="处理后文件存储目录")
     parser.add_argument("--use-minicpm", action="store_true", 
                       help="使用MiniCPM大模型进行语音处理")
     parser.add_argument("--use-qwen", action="store_true", 
