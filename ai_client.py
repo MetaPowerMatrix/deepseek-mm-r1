@@ -592,8 +592,6 @@ def main():
     USE_MINICPM = args.use_minicpm
     USE_QWEN = args.use_qwen
     SKIP_TTS = args.skip_tts
-    AUDIO_DIR = args.audio_dir
-    PROCESSED_DIR = args.processed_dir
     
     # 创建必要的目录
     setup_directories()
