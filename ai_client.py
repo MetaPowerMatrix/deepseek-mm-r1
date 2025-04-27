@@ -610,7 +610,7 @@ async def call_minicpm(audio_path, reference_audio_file, output_audio_path):
             'Content-Type': 'application/json'
         }
         data = {
-            "input_audio": audio_path,
+            "audio_input": audio_path,
             "ref_audio": reference_audio_file,
             "output_audio_path": output_audio_path
         }
