@@ -1,7 +1,8 @@
 from direct.showbase.ShowBase import ShowBase
 from direct.gui.DirectGui import DirectFrame, DirectEntry, DirectButton, DirectLabel
 from direct.task.Task import Task
-from panda3d.core import TextNode, loadPrcFileData, CardMaker, NodePath, Texture, Vec4
+from panda3d.core import TextNode, loadPrcFileData, Filename
+import gltf
 from direct.gui.OnscreenImage import OnscreenImage
 import logging
 import os
@@ -53,9 +54,9 @@ class ChatApp(ShowBase):
             # dlight.setShadowCaster(True)  # 启用阴影
 
             # 加载并设置立方体
-            model_path = os.path.join(os.path.dirname(__file__), "models", "rocket.egg")
-            logger.info(f"Loading model from: {model_path}")
-            self.cube = self.loader.loadModel(model_path)
+            model_robot = os.path.join(os.path.dirname(__file__), "models")
+            print(f"Loading model from: {model_robot}")
+            self.cube = gltf.loadModel(Filename(model_robot, "robot.glb"))
             self.cube.reparentTo(self.render)
             self.cube.setPos(0.5, 15, 0)
             self.cube.setScale(1)

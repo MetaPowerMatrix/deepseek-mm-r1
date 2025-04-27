@@ -10,6 +10,7 @@ import websockets
 import requests
 from dotenv import load_dotenv
 from pathlib import Path
+from pydub import AudioSegment
 
 # 加载.env文件中的环境变量
 load_dotenv()
@@ -33,7 +34,7 @@ TTS_API_URL = "http://127.0.0.1:5000/process"
 SPEECH_TO_TEXT_URL = f"{API_URL}/speech-to-text"
 CHAT_URL = f"{API_URL}/chat"
 QWEN_CHAT_URL = f"{API_URL}/chat/qwen"
-MINICPM_URL = f"{API_URL}/minicpm"
+MINICPM_URL = f"{API_URL}/voice-chat"
 TEXT_TO_SPEECH_URL = f"{TTS_API_URL}"
 
 # 状态接口URL
@@ -63,20 +64,6 @@ def setup_directories():
 def check_service_status():
     """检查本地服务接口的状态"""
     try:
-        # 检查聊天服务状态
-        if USE_QWEN:
-            response = requests.get(QWEN_CHAT_STATUS_URL)
-            if response.status_code == 200:
-                logger.info(f"Qwen聊天服务状态: {response.json()}")
-            else:
-                logger.error(f"Qwen聊天服务状态检查失败: {response.status_code}")
-        else:
-            response = requests.get(CHAT_STATUS_URL)
-            if response.status_code == 200:
-                logger.info(f"Deepseek聊天服务状态: {response.json()}")
-            else:
-                logger.error(f"Deepseek聊天服务状态检查失败: {response.status_code}")
-
         # 检查MiniCPM服务状态
         if USE_MINICPM:
             response = requests.get(MINICPM_STATUS_URL)
@@ -85,8 +72,22 @@ def check_service_status():
             else:
                 logger.error(f"MiniCPM服务状态检查失败: {response.status_code}")
 
-        # 检查语音转文字服务状态
         if not USE_MINICPM:
+            # 检查聊天服务状态
+            if USE_QWEN:
+                response = requests.get(QWEN_CHAT_STATUS_URL)
+                if response.status_code == 200:
+                    logger.info(f"Qwen聊天服务状态: {response.json()}")
+                else:
+                    logger.error(f"Qwen聊天服务状态检查失败: {response.status_code}")
+            else:
+                response = requests.get(CHAT_STATUS_URL)
+                if response.status_code == 200:
+                    logger.info(f"Deepseek聊天服务状态: {response.json()}")
+                else:
+                    logger.error(f"Deepseek聊天服务状态检查失败: {response.status_code}")
+
+            # 检查语音转文字服务状态
             response = requests.get(SPEECH_TO_TEXT_STATUS_URL)
             if response.status_code == 200:
                 logger.info(f"语音转文字服务状态: {response.json()}")
@@ -231,7 +232,9 @@ async def text_to_speech(text, reference_audio_file):
             
             if output_file and os.path.exists(output_file):
                 with open(output_file, 'rb') as wav_file:
-                    audio_data = wav_file.read()
+                    # 读取wav文件，并转换为pcm
+                    audio = AudioSegment.from_wav(wav_file)
+                    audio_data = audio.raw_data
                     logger.info(f"读取音频文件成功: 大小={len(audio_data)}字节")
                     return audio_data
             else:
@@ -290,13 +293,11 @@ async def select_voice_category(ai_response):
 
 async def process_audio(raw_audio_data, session_id):
     """处理音频数据的完整流程，支持选择不同的处理模式"""
-    temp_files = []  # 记录临时文件以便清理
     
     try:
         # 生成唯一文件名
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        wav_file_path = os.path.join(AUDIO_DIR, f"audio_{session_id}_{timestamp}.wav")
-        temp_files.append(wav_file_path)
+        wav_file_path = os.path.join(AUDIO_DIR, f"audio_input_{session_id}_{timestamp}.wav")
         
         # 将原始数据保存为WAV文件
         with wave.open(wav_file_path, 'wb') as wav_file:
@@ -309,32 +310,17 @@ async def process_audio(raw_audio_data, session_id):
         # MiniCPM模式：直接将音频发送给MiniCPM处理
         if USE_MINICPM:
             logger.info("使用MiniCPM模式处理音频...")
-            text_response, audio_response, error = await call_minicpm(wav_file_path)
+            reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
+            output_audio_path = os.path.join(AUDIO_DIR, f"audio_output_{session_id}_{timestamp}.wav")
+            text_response, audio_response, error = await call_minicpm(wav_file_path, reference_audio_file, output_audio_path)
             
             if error:
                 logger.error(f"MiniCPM处理失败: {error}")
-                return None, f"处理失败: {error}"
-                
-            if not text_response:
-                logger.warning("MiniCPM未返回文本回复")
-                return audio_response, "抱歉，未能获取文本回复。"
+                return None, f"MiniCPM处理失败: {error}"
                 
             # 如果MiniCPM已经生成了音频，直接返回
-            if audio_response and not SKIP_TTS:
-                logger.info("使用MiniCPM生成的音频回复")
-                return audio_response, text_response
-                
-            # 如果需要跳过TTS或MiniCPM没有生成音频，处理文本回复
-            if SKIP_TTS:
-                logger.info("跳过TTS步骤，仅返回文本回复")
-                return None, text_response
-                
-            # 否则，使用常规TTS生成音频
-            logger.info("MiniCPM未生成音频，使用MegaTTS生成")
-            reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
-            audio_response = await text_to_speech(text_response, reference_audio_file)
-            
             if audio_response:
+                logger.info("使用MiniCPM生成的音频回复")
                 return audio_response, text_response
             else:
                 return None, text_response
@@ -382,15 +368,6 @@ async def process_audio(raw_audio_data, session_id):
         import traceback
         logger.error(traceback.format_exc())
         return None, "处理请求时发生错误。"
-    finally:
-        # 清理临时文件
-        for file_path in temp_files:
-            try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                    logger.debug(f"已清理临时文件: {file_path}")
-            except Exception as e:
-                logger.warning(f"清理临时文件失败: {file_path}, 错误: {e}")
 
 async def ai_backend_client(websocket_url):
     """
@@ -617,7 +594,7 @@ def main():
     asyncio.run(ai_backend_client(WS_URL))
 
 # 添加调用MiniCPM的函数
-async def call_minicpm(audio_path):
+async def call_minicpm(audio_path, reference_audio_file, output_audio_path):
     """调用MiniCPM处理音频文件，直接返回文本回复和可选的音频回复"""
     try:
         logger.info(f"开始调用MiniCPM处理音频: {audio_path}")
@@ -629,35 +606,37 @@ async def call_minicpm(audio_path):
         
         # 读取音频文件
         with open(audio_path, 'rb') as audio_file:
-            files = {
-                'file': (os.path.basename(audio_path), audio_file, 'audio/wav')
-            }
-            
             headers = {
-                'Accept': 'application/json'
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            }
+            data = {
+                "input_audio": audio_file,
+                "ref_audio": reference_audio_file,
+                "output_audio_path": output_audio_path
             }
             
             logger.info(f"发送请求到MiniCPM: {MINICPM_URL}")
             
-            response = requests.post(MINICPM_URL, files=files, headers=headers)
-            
+            response = requests.post(MINICPM_URL, headers=headers, json=data)
+
             logger.info(f"收到MiniCPM响应: 状态码={response.status_code}")
             
             if response.status_code == 200:
                 result = response.json()
                 
                 if result.get("code") == 0:
-                    text_response = result.get("data", {}).get("text_response", "")
-                    audio_file_path = result.get("data", {}).get("audio_file", "")
+                    text_response = result.get("data", {}).get("text", "")
+                    output_audio_file_path = result.get("data", {}).get("output_audio_path", "")
                     
                     logger.info(f"MiniCPM处理成功，文本回复: {text_response[:50]}...")
+                    logger.info(f"MiniCPM生成的音频文件: {output_audio_file_path}")
                     
                     # 如果有音频文件，读取它
                     audio_response = None
-                    if audio_file_path and os.path.exists(audio_file_path):
-                        with open(audio_file_path, 'rb') as f:
-                            audio_response = f.read()
-                        logger.info(f"读取MiniCPM生成的音频文件: {audio_file_path}")
+                    if output_audio_file_path and os.path.exists(output_audio_file_path):
+                        audio = AudioSegment.from_file(output_audio_file_path, format="wav")
+                        audio_response = audio.raw_data
                     
                     return text_response, audio_response, None
                 else:
