@@ -603,6 +603,9 @@ async def call_minicpm(audio_path, reference_audio_file, output_audio_path):
         if not os.path.exists(audio_path):
             logger.error(f"音频文件不存在: {audio_path}")
             return None, None, "音频文件不存在"
+        # 获取全路径
+        audio_path = os.path.abspath(audio_path)
+        output_audio_path = os.path.abspath(output_audio_path)
         
         # 读取音频文件
         headers = {
