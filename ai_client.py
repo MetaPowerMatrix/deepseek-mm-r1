@@ -605,47 +605,46 @@ async def call_minicpm(audio_path, reference_audio_file, output_audio_path):
             return None, None, "音频文件不存在"
         
         # 读取音频文件
-        with open(audio_path, 'rb') as audio_file:
-            headers = {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            }
-            data = {
-                "input_audio": audio_file,
-                "ref_audio": reference_audio_file,
-                "output_audio_path": output_audio_path
-            }
-            
-            logger.info(f"发送请求到MiniCPM: {MINICPM_URL}")
-            
-            response = requests.post(MINICPM_URL, headers=headers, json=data)
+        headers = {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        }
+        data = {
+            "input_audio": audio_path,
+            "ref_audio": reference_audio_file,
+            "output_audio_path": output_audio_path
+        }
+        
+        logger.info(f"发送请求到MiniCPM: {MINICPM_URL}")
+        
+        response = requests.post(MINICPM_URL, headers=headers, json=data)
 
-            logger.info(f"收到MiniCPM响应: 状态码={response.status_code}")
+        logger.info(f"收到MiniCPM响应: 状态码={response.status_code}")
+        
+        if response.status_code == 200:
+            result = response.json()
             
-            if response.status_code == 200:
-                result = response.json()
+            if result.get("code") == 0:
+                text_response = result.get("data", {}).get("text", "")
+                output_audio_file_path = result.get("data", {}).get("output_audio_path", "")
                 
-                if result.get("code") == 0:
-                    text_response = result.get("data", {}).get("text", "")
-                    output_audio_file_path = result.get("data", {}).get("output_audio_path", "")
-                    
-                    logger.info(f"MiniCPM处理成功，文本回复: {text_response[:50]}...")
-                    logger.info(f"MiniCPM生成的音频文件: {output_audio_file_path}")
-                    
-                    # 如果有音频文件，读取它
-                    audio_response = None
-                    if output_audio_file_path and os.path.exists(output_audio_file_path):
-                        audio = AudioSegment.from_file(output_audio_file_path, format="wav")
-                        audio_response = audio.raw_data
-                    
-                    return text_response, audio_response, None
-                else:
-                    error_msg = result.get("message", "MiniCPM处理失败")
-                    logger.error(f"MiniCPM返回错误: {error_msg}")
-                    return None, None, error_msg
+                logger.info(f"MiniCPM处理成功，文本回复: {text_response[:50]}...")
+                logger.info(f"MiniCPM生成的音频文件: {output_audio_file_path}")
+                
+                # 如果有音频文件，读取它
+                audio_response = None
+                if output_audio_file_path and os.path.exists(output_audio_file_path):
+                    audio = AudioSegment.from_file(output_audio_file_path, format="wav")
+                    audio_response = audio.raw_data
+                
+                return text_response, audio_response, None
             else:
-                logger.error(f"MiniCPM请求失败: 状态码={response.status_code}, 响应内容={response.text}")
-                return None, None, f"MiniCPM请求失败: {response.status_code}"
+                error_msg = result.get("message", "MiniCPM处理失败")
+                logger.error(f"MiniCPM返回错误: {error_msg}")
+                return None, None, error_msg
+        else:
+            logger.error(f"MiniCPM请求失败: 状态码={response.status_code}, 响应内容={response.text}")
+            return None, None, f"MiniCPM请求失败: {response.status_code}"
     except Exception as e:
         logger.error(f"调用MiniCPM时出错: {str(e)}")
         import traceback
