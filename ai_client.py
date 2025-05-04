@@ -323,6 +323,16 @@ async def process_audio(raw_audio_data, session_id):
                 logger.info("使用MiniCPM生成的音频回复")
                 return audio_response, text_response
             else:
+                logger.info("正在生成语音回复...")
+                reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
+                audio_response = await text_to_speech(text_response, reference_audio_file)
+                
+                # 如果成功生成语音
+                if audio_response:
+                    logger.info(f"已生成语音回复: {len(audio_response)} 字节")
+                    return audio_response, text_response
+                
+                logger.warning("语音合成失败")
                 return None, text_response
         
         # 常规模式：语音转文字 -> 聊天 -> 文字转语音
@@ -606,7 +616,7 @@ async def call_minicpm(audio_path, reference_audio_file, output_audio_path):
         # 获取全路径
         audio_path = os.path.abspath(audio_path)
         output_audio_path = os.path.abspath(output_audio_path)
-        
+
         # 读取音频文件
         headers = {
             'Accept': 'application/json',
