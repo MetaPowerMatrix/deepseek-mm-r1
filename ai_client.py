@@ -312,7 +312,7 @@ async def process_audio(raw_audio_data, session_id):
             logger.info("使用MiniCPM模式处理音频...")
             reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
             output_audio_path = os.path.join(AUDIO_DIR, f"audio_output_{session_id}_{timestamp}.wav")
-            text_response, audio_response, error = await call_minicpm(wav_file_path, reference_audio_file, output_audio_path)
+            text_response, audio_response, error = await call_minicpm(wav_file_path, reference_audio_file, output_audio_path, session_id)
             
             if error:
                 logger.error(f"MiniCPM处理失败: {error}")
@@ -604,7 +604,7 @@ def main():
     asyncio.run(ai_backend_client(WS_URL))
 
 # 添加调用MiniCPM的函数
-async def call_minicpm(audio_path, reference_audio_file, output_audio_path):
+async def call_minicpm(audio_path, reference_audio_file, output_audio_path, session_id):
     """调用MiniCPM处理音频文件，直接返回文本回复和可选的音频回复"""
     try:
         logger.info(f"开始调用MiniCPM处理音频: {audio_path}")
@@ -625,7 +625,8 @@ async def call_minicpm(audio_path, reference_audio_file, output_audio_path):
         data = {
             "audio_input": audio_path,
             "ref_audio": reference_audio_file,
-            "output_audio_path": output_audio_path
+            "output_audio_path": output_audio_path,
+            "session_id": session_id
         }
         
         logger.info(f"发送请求到MiniCPM: {MINICPM_URL}")
