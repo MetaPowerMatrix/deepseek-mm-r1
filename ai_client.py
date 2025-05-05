@@ -582,11 +582,7 @@ def main():
     USE_MINICPM = args.use_minicpm
     USE_QWEN = args.use_qwen
     SKIP_TTS = args.skip_tts
-    
-    # 设置音色名称
-    global reference_audio_file
-    reference_audio_file = AUDIO_CATEGORIES.get(args.voice_category, AUDIO_CATEGORIES["御姐配音暧昧"])
-    
+        
     # 创建必要的目录
     setup_directories()
     
@@ -596,6 +592,10 @@ def main():
     # 检查服务状态
     check_service_status()
     
+    # 设置音色名称
+    global reference_audio_file
+    reference_audio_file = AUDIO_CATEGORIES.get(args.voice_category, AUDIO_CATEGORIES["御姐配音暧昧"])
+
     # 打印启动信息
     logger.info("=" * 50)
     logger.info("AI音频处理客户端启动")
