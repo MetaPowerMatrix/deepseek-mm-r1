@@ -293,6 +293,7 @@ async def select_voice_category(ai_response):
 
 async def process_audio(raw_audio_data, session_id):
     """处理音频数据的完整流程，支持选择不同的处理模式"""
+    global reference_audio_file
     
     try:
         # 生成唯一文件名
@@ -310,7 +311,7 @@ async def process_audio(raw_audio_data, session_id):
         # MiniCPM模式：直接将音频发送给MiniCPM处理
         if USE_MINICPM:
             logger.info("使用MiniCPM模式处理音频...")
-            reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
+            # reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
             output_audio_path = os.path.join(AUDIO_DIR, f"audio_output_{session_id}_{timestamp}.wav")
             text_response, audio_response, error = await call_minicpm(wav_file_path, reference_audio_file, output_audio_path, session_id)
             
@@ -324,7 +325,7 @@ async def process_audio(raw_audio_data, session_id):
                 return audio_response, text_response
             else:
                 logger.info("正在生成语音回复...")
-                reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
+                # reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
                 audio_response = await text_to_speech(text_response, reference_audio_file)
                 
                 # 如果成功生成语音
@@ -362,7 +363,7 @@ async def process_audio(raw_audio_data, session_id):
             
             # 生成语音回复
             logger.info("正在生成语音回复...")
-            reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
+            # reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
             audio_response = await text_to_speech(ai_response, reference_audio_file)
             
             # 如果成功生成语音
@@ -571,6 +572,8 @@ def main():
                       help="使用Qwen聊天接口，而不是默认的Deepseek")
     parser.add_argument("--skip-tts", action="store_true", 
                       help="跳过文本转语音步骤")
+    parser.add_argument("--voice-category", type=str, default="御姐配音暧昧",
+                      help="指定音色名称，默认为'御姐配音暧昧'")
     
     args = parser.parse_args()
     
@@ -579,6 +582,10 @@ def main():
     USE_MINICPM = args.use_minicpm
     USE_QWEN = args.use_qwen
     SKIP_TTS = args.skip_tts
+    
+    # 设置音色名称
+    global reference_audio_file
+    reference_audio_file = AUDIO_CATEGORIES.get(args.voice_category, AUDIO_CATEGORIES["御姐配音暧昧"])
     
     # 创建必要的目录
     setup_directories()
@@ -598,6 +605,7 @@ def main():
     logger.info(f"使用MiniCPM: {USE_MINICPM}")
     logger.info(f"使用Qwen: {USE_QWEN}")
     logger.info(f"跳过TTS: {SKIP_TTS}")
+    logger.info(f"音色名称: {args.voice_category}")
     logger.info("=" * 50)
     
     # 启动异步循环
