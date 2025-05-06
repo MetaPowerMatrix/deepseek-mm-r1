@@ -1,4 +1,4 @@
-from f5tts_gradio_client import Client, handle_file
+from gradio_client import Client, handle_file
 
 client = Client("http://192.168.1.58:7860/")
 result = client.predict(
