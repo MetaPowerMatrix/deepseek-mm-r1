@@ -399,9 +399,11 @@ async def process_audio(raw_audio_data, session_id):
             
             # 生成语音回复
             logger.info("正在生成语音回复...")
-            # reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
-            audio_response = await text_to_speech(ai_response, reference_audio_file)
-            
+            if USE_F5TTS:
+                audio_response = await use_f5tts(text_response, reference_audio_file)
+            else:
+                audio_response = await text_to_speech(text_response, reference_audio_file)
+
             # 如果成功生成语音
             if audio_response:
                 logger.info(f"已生成语音回复: {len(audio_response)} 字节")
