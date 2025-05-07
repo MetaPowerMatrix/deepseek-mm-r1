@@ -1,10 +1,10 @@
 from gradio_client import Client, handle_file
 
 client = Client("http://192.168.1.58:7860/")
-result = client.predict(
+output_audio_path, _, _, _ = client.predict(
 		ref_audio_input=handle_file('/root/smart-yolo/MegaTTS3/assets/女/魅惑女声.wav'),
 		ref_text_input="我可不知足为了极致的味道我愿意让自己",
-		gen_text_input="你今天还开心吗？有没有想我？要不要我去陪你",
+		gen_text_input="我想你了，想和你一起去旅行",
 		remove_silence=False,
 		randomize_seed=True,
 		seed_input=0,
@@ -13,4 +13,4 @@ result = client.predict(
 		speed_slider=1,
 		api_name="/basic_tts"
 )
-print(result)
+print(output_audio_path)
