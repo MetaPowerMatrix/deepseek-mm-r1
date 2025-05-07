@@ -2,9 +2,9 @@ from gradio_client import Client, handle_file
 
 client = Client("http://192.168.1.58:7860/")
 result = client.predict(
-		ref_audio_input=handle_file('/root/smart-yolo/MegaTTS3/assets/女/孤独感女声朗读.wav'),
-		ref_text_input="但他的灯光温暖而柔和,每当夜晚降临,他便悄悄地亮起,照亮森林中的一条小路",
-		gen_text_input="我是小明,我是一个程序员,我喜欢编程,我喜欢玩游戏,我喜欢看电影,我喜欢听音乐,我喜欢旅游,我喜欢美食,我喜欢睡觉,我喜欢学习,我喜欢生活,我喜欢你",
+		ref_audio_input=handle_file('/root/smart-yolo/MegaTTS3/assets/女/魅惑女声.wav'),
+		ref_text_input="我可不知足为了极致的味道我愿意让自己",
+		gen_text_input="你今天还开心吗？有没有想我？要不要我去陪你",
 		remove_silence=False,
 		randomize_seed=True,
 		seed_input=0,
