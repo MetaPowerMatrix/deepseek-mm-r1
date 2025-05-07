@@ -1,9 +1,9 @@
 from gradio_client import Client, handle_file
 
-client = Client("http://192.168.1.58:7860/")
+client = Client("http://127.0.0.1:7860/")
 output_audio_path, _, _, _ = client.predict(
-		ref_audio_input=handle_file('/root/smart-yolo/MegaTTS3/assets/女/魅惑女声.wav'),
-		ref_text_input="我可不知足为了极致的味道我愿意让自己",
+		ref_audio_input=handle_file('/root/smart-yolo/MegaTTS3/assets/女/慵懒妩媚性感女声.wav'),
+		ref_text_input="",
 		gen_text_input="我想你了，想和你一起去旅行",
 		remove_silence=False,
 		randomize_seed=True,

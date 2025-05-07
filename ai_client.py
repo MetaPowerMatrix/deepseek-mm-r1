@@ -54,6 +54,7 @@ AUDIO_CATEGORIES = {}
 USE_MINICPM = False
 USE_QWEN = False
 SKIP_TTS = False
+USE_F5TTS = False
 
 def setup_directories():
     """确保必要的目录存在"""
@@ -291,6 +292,35 @@ async def select_voice_category(ai_response):
         logger.error(f"选择语音分类时出错: {e}")
         return None
 
+async def use_f5tts(text, reference_audio_file):
+    """调用f5tts接口将文本转换为语音"""
+    from gradio_client import Client, handle_file
+
+    client = Client("http://127.0.0.1:7860/")
+    output_audio_path, _, _, _ = client.predict(
+            ref_audio_input=handle_file(reference_audio_file),
+            ref_text_input="",
+            gen_text_input=text,
+            remove_silence=False,
+            randomize_seed=True,
+            seed_input=0,
+            cross_fade_duration_slider=0.15,
+            nfe_slider=32,
+            speed_slider=1,
+            api_name="/basic_tts"
+    )
+    if output_audio_path and os.path.exists(output_audio_path):
+        with open(output_audio_path, 'rb') as wav_file:
+            # 读取wav文件，并转换为pcm
+            audio = AudioSegment.from_wav(wav_file)
+            audio_data = audio.raw_data
+            logger.info(f"读取音频文件成功: 大小={len(audio_data)}字节")
+            return audio_data
+    else:
+        logger.error(f"输出文件不存在或路径无效: {output_audio_path}")
+        return None
+
+
 async def process_audio(raw_audio_data, session_id):
     """处理音频数据的完整流程，支持选择不同的处理模式"""
     global reference_audio_file
@@ -325,8 +355,10 @@ async def process_audio(raw_audio_data, session_id):
                 return audio_response, text_response
             else:
                 logger.info("正在生成语音回复...")
-                # reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
-                audio_response = await text_to_speech(text_response, reference_audio_file)
+                if USE_F5TTS:
+                    audio_response = await use_f5tts(text_response, reference_audio_file)
+                else:
+                    audio_response = await text_to_speech(text_response, reference_audio_file)
                 
                 # 如果成功生成语音
                 if audio_response:
@@ -572,17 +604,20 @@ def main():
                       help="使用Qwen聊天接口，而不是默认的Deepseek")
     parser.add_argument("--skip-tts", action="store_true", 
                       help="跳过文本转语音步骤")
+    parser.add_argument("--use-f5tts", action="store_true", 
+                      help="使用f5tts接口进行语音处理")
     parser.add_argument("--voice-category", type=str, default="御姐配音暧昧",
                       help="指定音色名称，默认为'御姐配音暧昧'")
     
     args = parser.parse_args()
     
     # 设置全局配置
-    global USE_MINICPM, USE_QWEN, SKIP_TTS, AUDIO_DIR, PROCESSED_DIR
+    global USE_MINICPM, USE_QWEN, SKIP_TTS, USE_F5TTS, AUDIO_DIR, PROCESSED_DIR
     USE_MINICPM = args.use_minicpm
     USE_QWEN = args.use_qwen
     SKIP_TTS = args.skip_tts
-        
+    USE_F5TTS = args.use_f5tts
+
     # 创建必要的目录
     setup_directories()
     
@@ -604,6 +639,7 @@ def main():
     logger.info(f"处理文件目录: {PROCESSED_DIR}")
     logger.info(f"使用MiniCPM: {USE_MINICPM}")
     logger.info(f"使用Qwen: {USE_QWEN}")
+    logger.info(f"使用f5tts: {USE_F5TTS}")
     logger.info(f"跳过TTS: {SKIP_TTS}")
     logger.info(f"音色名称: {args.voice_category}")
     logger.info("=" * 50)
