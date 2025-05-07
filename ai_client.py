@@ -11,6 +11,7 @@ import requests
 from dotenv import load_dotenv
 from pathlib import Path
 from pydub import AudioSegment
+import random
 
 # 加载.env文件中的环境变量
 load_dotenv()
@@ -311,10 +312,10 @@ async def use_f5tts(text, reference_audio_file):
             gen_text_input=text,
             remove_silence=False,
             randomize_seed=True,
-            seed_input=0,
+            seed_input=random.randint(0, 1000000),
             cross_fade_duration_slider=0.15,
             nfe_slider=32,
-            speed_slider=1,
+            speed_slider=0.8,
             api_name="/basic_tts"
     )
     if output_audio_path and os.path.exists(output_audio_path):
