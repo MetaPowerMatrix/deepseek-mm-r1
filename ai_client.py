@@ -37,6 +37,7 @@ CHAT_URL = f"{API_URL}/chat"
 QWEN_CHAT_URL = f"{API_URL}/chat/qwen"
 MINICPM_URL = f"{API_URL}/voice-chat"
 TEXT_TO_SPEECH_URL = f"{TTS_API_URL}"
+UNCENSORED_CHAT_URL = f"{API_URL}/chat/uncensored"
 
 # 状态接口URL
 SPEECH_TO_TEXT_STATUS_URL = f"{API_URL}/speech-to-text/status"
@@ -44,6 +45,7 @@ CHAT_STATUS_URL = f"{API_URL}/chat/status"
 MEGATTS_STATUS_URL = f"{API_URL}/megatts/status"
 MINICPM_STATUS_URL = f"{API_URL}/minicpm/status"
 QWEN_CHAT_STATUS_URL = f"{API_URL}/qwen/status"
+UNCENSORED_CHAT_STATUS_URL = f"{API_URL}/uncensored/status"
 
 # 会话历史记录
 conversation_history = []
@@ -56,6 +58,7 @@ USE_MINICPM = False
 USE_QWEN = False
 SKIP_TTS = False
 USE_F5TTS = False
+USE_UNCENSORED = False
 
 def setup_directories():
     """确保必要的目录存在"""
@@ -158,9 +161,16 @@ async def get_chat_response(prompt):
     global conversation_history
     
     # 确定要使用的URL
-    url = QWEN_CHAT_URL if USE_QWEN else CHAT_URL
+    if USE_UNCENSORED:
+        url = UNCENSORED_CHAT_URL
+    elif USE_QWEN:
+        url = QWEN_CHAT_URL
+    else:
+        url = CHAT_URL
+
     model_name = "Qwen" if USE_QWEN else "Deepseek"
-    
+    model_name = "Uncensored" if USE_UNCENSORED else model_name
+
     try:
         data = {
             "prompt": prompt,
@@ -180,21 +190,6 @@ async def get_chat_response(prompt):
             if result.get("code") == 0:
                 # 从data.response中获取助手回复
                 assistant_response = result.get("data", {}).get("response", "")
-                # 获取API返回的历史记录
-                new_history = result.get("data", {}).get("history", [])
-                
-                # 如果API返回了历史记录，直接使用；否则，手动更新
-                if new_history:
-                    conversation_history = new_history
-                else:
-                    # 更新全局对话历史
-                    conversation_history.append({"role": "user", "content": prompt})
-                    conversation_history.append({"role": "assistant", "content": assistant_response})
-                
-                # 保持对话历史在合理长度
-                if len(conversation_history) > 10:
-                    conversation_history = conversation_history[-10:]
-                    
                 logger.info(f"{model_name}聊天请求成功，回复: {assistant_response[:50]}...")
                 return assistant_response
             else:
@@ -615,17 +610,20 @@ def main():
                       help="跳过文本转语音步骤")
     parser.add_argument("--use-f5tts", action="store_true", 
                       help="使用f5tts接口进行语音处理")
+    parser.add_argument("--use-uncensored", action="store_true", 
+                      help="使用不审查聊天接口")
     parser.add_argument("--voice-category", type=str, default="御姐配音暧昧",
                       help="指定音色名称，默认为'御姐配音暧昧'")
     
     args = parser.parse_args()
     
     # 设置全局配置
-    global USE_MINICPM, USE_QWEN, SKIP_TTS, USE_F5TTS, AUDIO_DIR, PROCESSED_DIR
+    global USE_MINICPM, USE_QWEN, SKIP_TTS, USE_F5TTS, AUDIO_DIR, PROCESSED_DIR, USE_UNCENSORED
     USE_MINICPM = args.use_minicpm
     USE_QWEN = args.use_qwen
     SKIP_TTS = args.skip_tts
     USE_F5TTS = args.use_f5tts
+    USE_UNCENSORED = args.use_uncensored
 
     # 创建必要的目录
     setup_directories()
@@ -649,6 +647,7 @@ def main():
     logger.info(f"使用MiniCPM: {USE_MINICPM}")
     logger.info(f"使用Qwen: {USE_QWEN}")
     logger.info(f"使用f5tts: {USE_F5TTS}")
+    logger.info(f"使用不审查聊天接口: {USE_UNCENSORED}")
     logger.info(f"跳过TTS: {SKIP_TTS}")
     logger.info(f"音色名称: {args.voice_category}")
     logger.info("=" * 50)
