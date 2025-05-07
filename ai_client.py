@@ -296,10 +296,18 @@ async def use_f5tts(text, reference_audio_file):
     """调用f5tts接口将文本转换为语音"""
     from gradio_client import Client, handle_file
 
+    # 读取reference_audio_file同名的txt文件，如果文件不存在，则使用空字符串
+    reference_text_file = reference_audio_file.replace(".wav", ".txt")
+    if os.path.exists(reference_text_file):
+        with open(reference_text_file, "r", encoding="utf-8") as f:
+            reference_text = f.read()
+    else:
+        reference_text = ""
+
     client = Client("http://127.0.0.1:7860/")
     output_audio_path, _, _, _ = client.predict(
             ref_audio_input=handle_file(reference_audio_file),
-            ref_text_input="",
+            ref_text_input=reference_text,
             gen_text_input=text,
             remove_silence=False,
             randomize_seed=True,
