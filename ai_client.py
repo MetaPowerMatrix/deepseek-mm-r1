@@ -85,6 +85,13 @@ def check_service_status():
                     logger.info(f"Qwen聊天服务状态: {response.json()}")
                 else:
                     logger.error(f"Qwen聊天服务状态检查失败: {response.status_code}")
+            if USE_UNCENSORED:
+                pass
+                # response = requests.get(UNCENSORED_CHAT_STATUS_URL)
+                # if response.status_code == 200:
+                #     logger.info(f"未审核聊天服务状态: {response.json()}")
+                # else:
+                #     logger.error(f"未审核聊天服务状态检查失败: {response.status_code}")
             else:
                 response = requests.get(CHAT_STATUS_URL)
                 if response.status_code == 200:
