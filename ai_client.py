@@ -299,7 +299,7 @@ async def use_f5tts(text, reference_audio_file):
     client = Client("http://127.0.0.1:7860/")
     output_audio_path, _, _, _ = client.predict(
             ref_audio_input=handle_file(reference_audio_file),
-            ref_text_input="",
+            ref_text_input="我们的床好舒服啊,今天怎么这么晚回来啊,是不是又加班了,辛苦啦,你靠近一点呢,我帮你捏捏肩膀,舒服吗,叫我521号技师姐姐,你的洗发水味道真好闻",
             gen_text_input=text,
             remove_silence=False,
             randomize_seed=True,
