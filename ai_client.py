@@ -459,21 +459,21 @@ def on_message(ws, message):
                     logger.info(f"收到音频数据: 会话ID = {session_id}, 大小 = {len(raw_audio)} 字节")
                     
                     # 发送处理状态
-                    ws.send(json.dumps({
-                        "type": "text",
-                        "session_id": session_id,
-                        "content": "正在处理音频..."
-                    }))
+                    # ws.send(json.dumps({
+                    #     "type": "text",
+                    #     "session_id": session_id,
+                    #     "content": "正在处理音频..."
+                    # }))
                     
                     # 处理音频数据
                     audio_response, text_response = process_audio(raw_audio, session_id)
                     
-                    # 发送文本回复
-                    ws.send(json.dumps({
-                        "type": "text",
-                        "session_id": session_id,
-                        "content": text_response
-                    }))
+                    # # 发送文本回复
+                    # ws.send(json.dumps({
+                    #     "type": "text",
+                    #     "session_id": session_id,
+                    #     "content": text_response
+                    # }))
                     
                     # 发送音频回复 - 分块发送
                     if audio_response:
