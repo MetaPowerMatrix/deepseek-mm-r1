@@ -523,6 +523,11 @@ async def ai_backend_client(websocket_url):
         data = json.loads(response)
         logger.info(f"连接确认: {data.get('content', '')}")
 
+    async def on_ping(websocket):
+        """处理ping消息"""
+        logger.info("收到ping消息，发送pong回复")
+        await websocket.pong()
+
     while reconnect_attempt <= max_reconnect_attempts:
         try:
             if reconnect_attempt > 0:
@@ -531,7 +536,7 @@ async def ai_backend_client(websocket_url):
                 logger.info(f"正在连接到WebSocket代理: {websocket_url}")
             
             # 连接到WebSocket
-            async with websockets.connect(websocket_url) as websocket:
+            async with websockets.connect(websocket_url, ping_interval=None) as websocket:
                 # 重置重连计数
                 reconnect_attempt = 0
                 
@@ -540,7 +545,12 @@ async def ai_backend_client(websocket_url):
                 
                 # 事件监听循环
                 async for message in websocket:
-                    await on_message(websocket, message)
+                    if isinstance(message, bytes) and message == b"ping":
+                        # 处理ping消息
+                        await on_ping(websocket)
+                    else:
+                        # 处理其他消息
+                        await on_message(websocket, message)
         
         except websockets.exceptions.ConnectionClosed as e:
             reconnect_attempt += 1
