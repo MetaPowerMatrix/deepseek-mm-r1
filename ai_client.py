@@ -12,6 +12,9 @@ from dotenv import load_dotenv
 from pathlib import Path
 from pydub import AudioSegment
 import random
+import websocket
+import time
+import threading
 
 # 加载.env文件中的环境变量
 load_dotenv()
@@ -59,6 +62,11 @@ USE_QWEN = False
 SKIP_TTS = False
 USE_F5TTS = False
 USE_UNCENSORED = False
+
+# 重连参数
+max_reconnect_attempts = 10
+reconnect_delay_seconds = 5
+reconnect_attempt = 0
 
 def setup_directories():
     """确保必要的目录存在"""
@@ -424,167 +432,138 @@ async def process_audio(raw_audio_data, session_id):
         logger.error(traceback.format_exc())
         return None, "处理请求时发生错误。"
 
-async def ai_backend_client(websocket_url):
-    """
-    AI后端客户端
-    连接到WebSocket代理，接收音频数据，处理后返回结果
-    """
-    # 重连参数
-    max_reconnect_attempts = 10
-    reconnect_delay_seconds = 5
-    reconnect_attempt = 0
-
-    async def on_message(websocket, message):
-        """处理接收到的消息"""
-        try:
-            # 判断消息类型 - 文本还是二进制
-            if isinstance(message, str):
-                # 文本消息 - 可能是控制命令
+def on_message(ws, message):
+    """处理接收到的消息"""
+    try:
+        # 判断消息类型 - 文本还是二进制
+        if isinstance(message, str):
+            # 文本消息 - 可能是控制命令
+            try:
+                data = json.loads(message)
+                
+                # 处理取消请求
+                if data.get("type") == "cancel_processing":
+                    session_id = data.get("session_id")
+                    logger.info(f"取消处理会话 {session_id}")
+                    # 这里可以添加取消正在进行的处理逻辑
+                
+            except json.JSONDecodeError:
+                logger.error(f"无法解析JSON消息: {message}")
+        
+        elif isinstance(message, bytes):
+            # 直接处理二进制数据（音频）
+            binary_data = message
+            
+            # 从二进制数据中提取会话ID（前16字节）和音频数据
+            if len(binary_data) > 16:
+                # 提取会话ID（UUID格式，存储在前16字节）
+                session_id_bytes = binary_data[:16]
+                raw_audio = binary_data[16:]
+                
                 try:
-                    data = json.loads(message)
+                    # 将字节转换为UUID字符串
+                    session_id = uuid.UUID(bytes=session_id_bytes).hex
+                    logger.info(f"收到音频数据: 会话ID = {session_id}, 大小 = {len(raw_audio)} 字节")
                     
-                    # 处理取消请求
-                    if data.get("type") == "cancel_processing":
-                        session_id = data.get("session_id")
-                        logger.info(f"取消处理会话 {session_id}")
-                        # 这里可以添加取消正在进行的处理逻辑
+                    # 发送处理状态
+                    ws.send(json.dumps({
+                        "type": "text",
+                        "session_id": session_id,
+                        "content": "正在处理音频..."
+                    }))
                     
-                except json.JSONDecodeError:
-                    logger.error(f"无法解析JSON消息: {message}")
-            
-            elif isinstance(message, bytes):
-                # 直接处理二进制数据（音频）
-                binary_data = message
-                
-                # 从二进制数据中提取会话ID（前16字节）和音频数据
-                if len(binary_data) > 16:
-                    # 提取会话ID（UUID格式，存储在前16字节）
-                    session_id_bytes = binary_data[:16]
-                    raw_audio = binary_data[16:]
+                    # 处理音频数据
+                    audio_response, text_response = process_audio(raw_audio, session_id)
                     
-                    try:
-                        # 将字节转换为UUID字符串
-                        session_id = uuid.UUID(bytes=session_id_bytes).hex
-                        logger.info(f"收到音频数据: 会话ID = {session_id}, 大小 = {len(raw_audio)} 字节")
-                        
-                        # 发送处理状态
-                        await websocket.send(json.dumps({
-                            "type": "text",
-                            "session_id": session_id,
-                            "content": "正在处理音频..."
-                        }))
-                        
-                        # 处理音频数据
-                        audio_response, text_response = await process_audio(raw_audio, session_id)
-                        
-                        # 发送文本回复
-                        await websocket.send(json.dumps({
-                            "type": "text",
-                            "session_id": session_id,
-                            "content": text_response
-                        }))
-                        
-                        # 发送音频回复 - 分块发送
-                        if audio_response:
-                            chunk_size = 5120  # 大约5KB
-                            for i in range(0, len(audio_response), chunk_size):
-                                # 截取一块音频数据
-                                audio_chunk = audio_response[i:i+chunk_size]
-                                # 添加会话ID前缀
-                                data_with_session = session_id_bytes + audio_chunk
-                                # 发送
-                                await websocket.send(data_with_session)
-                                logger.info(f"发送音频回复块: 会话ID = {session_id}, 块大小 = {len(audio_chunk)} 字节")
-                                # 短暂暂停，避免发送过快
-                                await asyncio.sleep(0.05)
-                        
-                        logger.info(f"会话 {session_id} 处理完成")
-                        
-                    except ValueError:
-                        logger.error("无法解析会话ID")
-                else:
-                    logger.error(f"收到无效的音频数据: 长度过短 ({len(binary_data)} 字节)")
-        
-        except Exception as e:
-            import sys
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            line_number = exc_tb.tb_lineno
-            logger.error(f"处理消息时出错: {str(e)}, 出错行号: {line_number}")
-
-    async def on_connect(websocket):
-        """处理连接成功事件"""
-        # 发送AI后端标识
-        await websocket.send(json.dumps({
-            "client_type": "ai_backend"
-        }))
-        
-        # 接收连接确认
-        response = await websocket.recv()
-        data = json.loads(response)
-        logger.info(f"连接确认: {data.get('content', '')}")
-
-    async def on_ping(websocket):
-        """处理ping消息"""
-        logger.info("收到ping消息，发送pong回复")
-        await websocket.pong()
-
-    while reconnect_attempt <= max_reconnect_attempts:
-        try:
-            if reconnect_attempt > 0:
-                logger.info(f"尝试重新连接 (尝试 {reconnect_attempt}/{max_reconnect_attempts})...")
+                    # 发送文本回复
+                    ws.send(json.dumps({
+                        "type": "text",
+                        "session_id": session_id,
+                        "content": text_response
+                    }))
+                    
+                    # 发送音频回复 - 分块发送
+                    if audio_response:
+                        chunk_size = 5120  # 大约5KB
+                        for i in range(0, len(audio_response), chunk_size):
+                            # 截取一块音频数据
+                            audio_chunk = audio_response[i:i+chunk_size]
+                            # 添加会话ID前缀
+                            data_with_session = session_id_bytes + audio_chunk
+                            # 发送
+                            ws.send(data_with_session, websocket.ABNF.OPCODE_BINARY)
+                            logger.info(f"发送音频回复块: 会话ID = {session_id}, 块大小 = {len(audio_chunk)} 字节")
+                            # 短暂暂停，避免发送过快
+                            time.sleep(0.05)
+                    
+                    logger.info(f"会话 {session_id} 处理完成")
+                    
+                except ValueError:
+                    logger.error("无法解析会话ID")
             else:
-                logger.info(f"正在连接到WebSocket代理: {websocket_url}")
-            
-            # 连接到WebSocket
-            async with websockets.connect(websocket_url, ping_interval=None) as websocket:
-                # 重置重连计数
-                reconnect_attempt = 0
-                
-                # 处理连接成功事件
-                await on_connect(websocket)
-                
-                # 事件监听循环
-                async for message in websocket:
-                    if isinstance(message, bytes) and message == b"ping":
-                        # 处理ping消息
-                        await on_ping(websocket)
-                    else:
-                        # 处理其他消息
-                        await on_message(websocket, message)
-        
-        except websockets.exceptions.ConnectionClosed as e:
-            reconnect_attempt += 1
-            logger.warning(f"WebSocket连接已关闭: {str(e)}")
-            if reconnect_attempt <= max_reconnect_attempts:
-                logger.info(f"将在 {reconnect_delay_seconds} 秒后尝试重新连接...")
-                await asyncio.sleep(reconnect_delay_seconds)
-                # 指数退避算法增加重连延迟
-                reconnect_delay_seconds = min(60, reconnect_delay_seconds * 1.5)
-            else:
-                logger.error(f"达到最大重连次数 ({max_reconnect_attempts})，停止重连")
-                break
-                
-        except Exception as e:
-            reconnect_attempt += 1
-            import sys
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            line_number = exc_tb.tb_lineno
-            logger.error(f"WebSocket连接错误: {str(e)}, 出错行号: {line_number}")
-            
-            if reconnect_attempt <= max_reconnect_attempts:
-                logger.info(f"将在 {reconnect_delay_seconds} 秒后尝试重新连接...")
-                # 收集垃圾
-                import gc
-                gc.collect()
-                
-                await asyncio.sleep(reconnect_delay_seconds)
-                # 指数退避算法增加重连延迟
-                reconnect_delay_seconds = min(60, reconnect_delay_seconds * 1.5)
-            else:
-                logger.error(f"达到最大重连次数 ({max_reconnect_attempts})，停止重连")
-                break
+                logger.error(f"收到无效的音频数据: 长度过短 ({len(binary_data)} 字节)")
     
-    logger.error("WebSocket客户端已停止运行")
+    except Exception as e:
+        import sys
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        line_number = exc_tb.tb_lineno
+        logger.error(f"处理消息时出错: {str(e)}, 出错行号: {line_number}")
+
+def on_error(ws, error):
+    """处理错误"""
+    logger.error(f"WebSocket错误: {error}")
+
+def on_close(ws, close_status_code, close_msg):
+    """处理连接关闭"""
+    global reconnect_attempt
+    logger.warning(f"WebSocket连接已关闭: 状态码={close_status_code}, 消息={close_msg}")
+    
+    # 尝试重新连接
+    if reconnect_attempt < max_reconnect_attempts:
+        reconnect_attempt += 1
+        logger.info(f"将在 {reconnect_delay_seconds} 秒后尝试重新连接...")
+        time.sleep(reconnect_delay_seconds)
+        # 指数退避算法增加重连延迟
+        reconnect_delay_seconds = min(60, reconnect_delay_seconds * 1.5)
+        start_websocket()
+    else:
+        logger.error(f"达到最大重连次数 ({max_reconnect_attempts})，停止重连")
+
+def on_open(ws):
+    """处理连接成功"""
+    global reconnect_attempt
+    reconnect_attempt = 0
+    
+    # 发送AI后端标识
+    ws.send(json.dumps({
+        "client_type": "ai_backend"
+    }))
+    
+    logger.info("WebSocket连接已建立")
+
+def on_ping(wsapp, message):
+    print("Got a ping! A pong reply has already been automatically sent.")
+
+def on_pong(wsapp, message):
+    print("Got a pong! No need to respond")
+
+def start_websocket():
+    """启动WebSocket连接"""
+    ws = websocket.WebSocketApp(
+        WS_URL,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close,
+        on_ping=on_ping,
+        on_pong=on_pong
+    )
+    ws.on_open = on_open
+    ws.run_forever()
+    
+def ai_backend_client():
+    """AI后端客户端"""
+    logger.info("启动WebSocket客户端")
+    start_websocket()
 
 def initialize_audio_categories():
     """初始化音频分类"""
@@ -675,7 +654,8 @@ def main():
     logger.info("=" * 50)
     
     # 启动异步循环
-    asyncio.run(ai_backend_client(WS_URL))
+    ai_backend_client()
+    # threading.Thread(target=ai_backend_client).start()
 
 # 添加调用MiniCPM的函数
 async def call_minicpm(audio_path, reference_audio_file, output_audio_path, session_id):
