@@ -6,7 +6,6 @@ import datetime
 import wave
 import uuid
 import argparse
-import websockets
 import requests
 from dotenv import load_dotenv
 from pathlib import Path
@@ -14,7 +13,6 @@ from pydub import AudioSegment
 import random
 import websocket
 import time
-import threading
 
 # 加载.env文件中的环境变量
 load_dotenv()
@@ -432,7 +430,7 @@ async def process_audio(raw_audio_data, session_id):
         logger.error(traceback.format_exc())
         return None, "处理请求时发生错误。"
 
-async def on_message(ws, message):
+def on_message(ws, message):
     """处理接收到的消息"""
     try:
         # 判断消息类型 - 文本还是二进制
@@ -473,7 +471,7 @@ async def on_message(ws, message):
                     }))
                     
                     # 处理音频数据
-                    audio_response, text_response = await process_audio(raw_audio, session_id)
+                    audio_response, text_response = process_audio(raw_audio, session_id)
                     
                     # 发送文本回复
                     ws.send(json.dumps({
@@ -654,8 +652,7 @@ def main():
     logger.info("=" * 50)
     
     # 启动异步循环
-    ai_backend_client()
-    # threading.Thread(target=ai_backend_client).start()
+    asyncio.run(ai_backend_client())
 
 # 添加调用MiniCPM的函数
 async def call_minicpm(audio_path, reference_audio_file, output_audio_path, session_id):
