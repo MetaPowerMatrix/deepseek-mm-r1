@@ -61,11 +61,6 @@ SKIP_TTS = False
 USE_F5TTS = False
 USE_UNCENSORED = False
 
-# 重连参数
-max_reconnect_attempts = 10
-reconnect_delay_seconds = 5
-reconnect_attempt = 0
-
 def setup_directories():
     """确保必要的目录存在"""
     os.makedirs(AUDIO_DIR, exist_ok=True)
@@ -507,13 +502,18 @@ def on_message(ws, message):
         line_number = exc_tb.tb_lineno
         logger.error(f"处理消息时出错: {str(e)}, 出错行号: {line_number}")
 
+# 重连参数
+max_reconnect_attempts = 10
+reconnect_delay_seconds = 5
+reconnect_attempt = 0
+
 def on_error(ws, error):
     """处理错误"""
     logger.error(f"WebSocket错误: {error}")
 
 def on_close(ws, close_status_code, close_msg):
     """处理连接关闭"""
-    global reconnect_attempt
+    global reconnect_attempt, reconnect_delay_seconds, max_reconnect_attempts
     logger.warning(f"WebSocket连接已关闭: 状态码={close_status_code}, 消息={close_msg}")
     
     # 尝试重新连接
