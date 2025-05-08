@@ -425,7 +425,7 @@ def process_audio(raw_audio_data, session_id):
         logger.error(traceback.format_exc())
         return None, "处理请求时发生错误。"
 
-async def on_message(ws, message):
+def on_message(ws, message):
     """处理接收到的消息"""
     try:
         # 判断消息类型 - 文本还是二进制
