@@ -109,7 +109,7 @@ def check_service_status():
     except Exception as e:
         logger.error(f"服务状态检查失败: {e}")
 
-async def speech_to_text(audio_path):
+def speech_to_text(audio_path):
     """调用本地服务接口将语音转换为文本"""
     try:
         logger.info(f"开始语音转文字请求: {audio_path}")
@@ -163,7 +163,7 @@ async def speech_to_text(audio_path):
         logger.error(f"异常堆栈: {traceback.format_exc()}")
         return None
 
-async def get_chat_response(prompt):
+def get_chat_response(prompt):
     """调用聊天接口获取回复，根据配置选择Qwen或Deepseek"""
     global conversation_history
     
@@ -211,7 +211,7 @@ async def get_chat_response(prompt):
         logger.error(f"异常堆栈: {traceback.format_exc()}")
         return None
 
-async def text_to_speech(text, reference_audio_file):
+def text_to_speech(text, reference_audio_file):
     """调用本地服务接口将文本转换为语音"""
     try:
         logger.info(f"发送文字转语音请求: 文本长度={len(text)}, 参考音频={reference_audio_file}")
@@ -295,7 +295,7 @@ async def select_voice_category(ai_response):
         logger.error(f"选择语音分类时出错: {e}")
         return None
 
-async def use_f5tts(text, reference_audio_file):
+def use_f5tts(text, reference_audio_file):
     """调用f5tts接口将文本转换为语音"""
     from gradio_client import Client, handle_file
 
@@ -332,7 +332,7 @@ async def use_f5tts(text, reference_audio_file):
         return None
 
 
-async def process_audio(raw_audio_data, session_id):
+def process_audio(raw_audio_data, session_id):
     """处理音频数据的完整流程，支持选择不同的处理模式"""
     global reference_audio_file
     
@@ -354,7 +354,7 @@ async def process_audio(raw_audio_data, session_id):
             logger.info("使用MiniCPM模式处理音频...")
             # reference_audio_file = AUDIO_CATEGORIES["御姐配音暧昧"]
             output_audio_path = os.path.join(AUDIO_DIR, f"audio_output_{session_id}_{timestamp}.wav")
-            text_response, audio_response, error = await call_minicpm(wav_file_path, reference_audio_file, output_audio_path, session_id)
+            text_response, audio_response, error = call_minicpm(wav_file_path, reference_audio_file, output_audio_path, session_id)
             
             if error:
                 logger.error(f"MiniCPM处理失败: {error}")
@@ -367,9 +367,9 @@ async def process_audio(raw_audio_data, session_id):
             else:
                 logger.info("正在生成语音回复...")
                 if USE_F5TTS:
-                    audio_response = await use_f5tts(text_response, reference_audio_file)
+                    audio_response = use_f5tts(text_response, reference_audio_file)
                 else:
-                    audio_response = await text_to_speech(text_response, reference_audio_file)
+                    audio_response = text_to_speech(text_response, reference_audio_file)
                 
                 # 如果成功生成语音
                 if audio_response:
@@ -383,7 +383,7 @@ async def process_audio(raw_audio_data, session_id):
         else:
             # 转录音频
             logger.info("开始语音识别...")
-            transcript = await speech_to_text(wav_file_path)
+            transcript = speech_to_text(wav_file_path)
             if not transcript:
                 logger.warning("语音识别失败，未能获取文本")
                 return None, "抱歉，无法识别您的语音。"
@@ -392,7 +392,7 @@ async def process_audio(raw_audio_data, session_id):
             
             # 获取聊天回复
             logger.info("正在获取AI回复...")
-            ai_response = await get_chat_response(transcript)
+            ai_response = get_chat_response(transcript)
             if not ai_response:
                 logger.warning("获取AI回复失败")
                 return None, "抱歉，无法获取AI回复。"
@@ -407,9 +407,9 @@ async def process_audio(raw_audio_data, session_id):
             # 生成语音回复
             logger.info("正在生成语音回复...")
             if USE_F5TTS:
-                audio_response = await use_f5tts(ai_response, reference_audio_file)
+                audio_response = use_f5tts(ai_response, reference_audio_file)
             else:
-                audio_response = await text_to_speech(ai_response, reference_audio_file)
+                audio_response = text_to_speech(ai_response, reference_audio_file)
 
             # 如果成功生成语音
             if audio_response:
@@ -466,7 +466,7 @@ async def on_message(ws, message):
                     }))
                     
                     # 处理音频数据
-                    audio_response, text_response = await process_audio(raw_audio, session_id)
+                    audio_response, text_response = process_audio(raw_audio, session_id)
                     
                     # 发送文本回复
                     ws.send(json.dumps({
@@ -655,7 +655,7 @@ def main():
     asyncio.run(ai_backend_client())
 
 # 添加调用MiniCPM的函数
-async def call_minicpm(audio_path, reference_audio_file, output_audio_path, session_id):
+def call_minicpm(audio_path, reference_audio_file, output_audio_path, session_id):
     """调用MiniCPM处理音频文件，直接返回文本回复和可选的音频回复"""
     try:
         logger.info(f"开始调用MiniCPM处理音频: {audio_path}")
