@@ -28,7 +28,7 @@ logger = logging.getLogger("ai_client")
 # 全局变量
 AUDIO_DIR = os.getenv("AUDIO_DIR", "audio_files")
 PROCESSED_DIR = os.getenv("PROCESSED_DIR", "processed_files")
-WS_URL = os.getenv("WS_URL", "ws://stream.kalaisai.com:80/ws/proxy")
+WS_URL = os.getenv("WS_URL", "ws://stream.kalaisai.com.eo.dnse0.com:80/ws/proxy")
 
 # 本地服务接口URL
 API_URL = "http://127.0.0.1:8000/api/v1"
