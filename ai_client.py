@@ -61,6 +61,14 @@ SKIP_TTS = False
 USE_F5TTS = False
 USE_UNCENSORED = False
 
+# WebSocket相关配置
+WS_HEARTBEAT_INTERVAL = 30  # 心跳间隔（秒）
+WS_RECONNECT_DELAY = 5  # 重连延迟（秒）
+WS_MAX_RETRIES = 3  # 最大重试次数
+WS_CHUNK_SIZE = 4096  # 数据分块大小
+WS_SEND_TIMEOUT = 10  # 发送超时时间（秒）
+
+
 def setup_directories():
     """确保必要的目录存在"""
     os.makedirs(AUDIO_DIR, exist_ok=True)
@@ -425,6 +433,29 @@ def process_audio(raw_audio_data, session_id):
         logger.error(traceback.format_exc())
         return None, "处理请求时发生错误。"
 
+def send_audio_chunk(ws, session_id_bytes, audio_chunk, retry_count=0):
+    """发送音频数据块，带重试机制"""
+    try:
+        if not ws or not ws.sock or not ws.sock.connected:
+            logger.error("WebSocket连接已断开，无法发送数据")
+            return False
+            
+        # 添加会话ID前缀
+        data_with_session = session_id_bytes + audio_chunk
+        ws.send(data_with_session, websocket.ABNF.OPCODE_BINARY)
+        return True
+    except websocket.WebSocketConnectionClosedException:
+        if retry_count < WS_MAX_RETRIES:
+            logger.warning(f"发送数据失败，正在重试 ({retry_count + 1}/{WS_MAX_RETRIES})")
+            time.sleep(WS_RECONNECT_DELAY)
+            return send_audio_chunk(ws, session_id_bytes, audio_chunk, retry_count + 1)
+        else:
+            logger.error("达到最大重试次数，发送失败")
+            return False
+    except Exception as e:
+        logger.error(f"发送数据时出错: {str(e)}")
+        return False
+
 def on_message(ws, message):
     """处理接收到的消息"""
     try:
@@ -477,15 +508,17 @@ def on_message(ws, message):
                     
                     # 发送音频回复 - 分块发送
                     if audio_response:
-                        chunk_size = 5120  # 大约5KB
+                        chunk_size = WS_CHUNK_SIZE
+                        total_chunks = (len(audio_response) + chunk_size - 1) // chunk_size
+                        
                         for i in range(0, len(audio_response), chunk_size):
                             # 截取一块音频数据
                             audio_chunk = audio_response[i:i+chunk_size]
-                            # 添加会话ID前缀
-                            data_with_session = session_id_bytes + audio_chunk
-                            # 发送
-                            ws.send(data_with_session, websocket.ABNF.OPCODE_BINARY)
-                            logger.info(f"发送音频回复块: 会话ID = {session_id}, 块大小 = {len(audio_chunk)} 字节")
+                            # 发送数据块
+                            if not send_audio_chunk(ws, session_id_bytes, audio_chunk):
+                                logger.error(f"发送音频数据块失败: {i//chunk_size + 1}/{total_chunks}")
+                                break
+                            logger.info(f"发送音频回复块: 会话ID = {session_id}, 块大小 = {len(audio_chunk)} 字节, 进度: {i//chunk_size + 1}/{total_chunks}")
                             # 短暂暂停，避免发送过快
                             time.sleep(0.05)
                     
@@ -501,6 +534,32 @@ def on_message(ws, message):
         exc_type, exc_obj, exc_tb = sys.exc_info()
         line_number = exc_tb.tb_lineno
         logger.error(f"处理消息时出错: {str(e)}, 出错行号: {line_number}")
+
+def send_heartbeat(ws):
+    """发送心跳包保持连接活跃"""
+    try:
+        if ws and ws.sock and ws.sock.connected:
+            ws.send(json.dumps({"type": "heartbeat"}))
+            logger.debug("已发送心跳包")
+    except Exception as e:
+        logger.error(f"发送心跳包失败: {str(e)}")
+
+def start_heartbeat(ws):
+    """启动心跳线程"""
+    def heartbeat_thread():
+        while True:
+            try:
+                if ws and ws.sock and ws.sock.connected:
+                    send_heartbeat(ws)
+                time.sleep(WS_HEARTBEAT_INTERVAL)
+            except Exception as e:
+                logger.error(f"心跳线程出错: {str(e)}")
+                break
+    
+    import threading
+    heartbeat = threading.Thread(target=heartbeat_thread, daemon=True)
+    heartbeat.start()
+    return heartbeat
 
 # 重连参数
 max_reconnect_attempts = 10
@@ -556,8 +615,22 @@ def start_websocket():
         on_pong=on_pong
     )
     ws.on_open = on_open
-    ws.run_forever()
     
+    # 启动心跳线程
+    heartbeat_thread = start_heartbeat(ws)
+    
+    # 设置WebSocket选项
+    ws.run_forever(
+        ping_interval=WS_HEARTBEAT_INTERVAL,
+        ping_timeout=WS_SEND_TIMEOUT,
+        skip_utf8_validation=True
+    )
+    
+    # 等待心跳线程结束
+    if heartbeat_thread:
+        heartbeat_thread.join()
+        
+            
 def ai_backend_client():
     """AI后端客户端"""
     logger.info("启动WebSocket客户端")
