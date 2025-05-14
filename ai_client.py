@@ -62,11 +62,11 @@ USE_F5TTS = False
 USE_UNCENSORED = False
 
 # WebSocket相关配置
-WS_HEARTBEAT_INTERVAL = 30  # 心跳间隔（秒）
+WS_HEARTBEAT_INTERVAL = 10  # 心跳间隔（秒）
 WS_RECONNECT_DELAY = 5  # 重连延迟（秒）
 WS_MAX_RETRIES = 3  # 最大重试次数
 WS_CHUNK_SIZE = 4096  # 数据分块大小
-WS_SEND_TIMEOUT = 10  # 发送超时时间（秒）
+WS_SEND_TIMEOUT = 30  # 发送超时时间（秒）
 
 
 def setup_directories():
@@ -464,7 +464,7 @@ def on_message(ws, message):
         if isinstance(message, str):
             # 文本消息 - 可能是控制命令
             pass
-        
+
         elif isinstance(message, bytes):
             # 直接处理二进制数据（音频）
             binary_data = message
