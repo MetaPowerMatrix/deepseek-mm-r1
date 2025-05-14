@@ -621,15 +621,14 @@ def start_websocket():
     
     # 设置WebSocket选项
     ws.run_forever(
-        ping_interval=WS_HEARTBEAT_INTERVAL,
-        ping_timeout=WS_SEND_TIMEOUT,
+        ping_interval=None,
+        ping_timeout=None,
         skip_utf8_validation=True
     )
     
     # 等待心跳线程结束
     if heartbeat_thread:
         heartbeat_thread.join()
-        
             
 def ai_backend_client():
     """AI后端客户端"""
