@@ -473,7 +473,7 @@ def on_message(ws, message):
                     # 这里可以添加取消正在进行的处理逻辑
                 
             except json.JSONDecodeError:
-                logger.error(f"无法解析JSON消息: {message}")
+                logger.error(f"非JSON消息: {message}")
         
         elif isinstance(message, bytes):
             # 直接处理二进制数据（音频）
