@@ -460,6 +460,7 @@ def on_message(ws, message):
     """处理接收到的消息"""
     try:
         # 判断消息类型 - 文本还是二进制
+        print(f"收到消息: {message}")
         if isinstance(message, str):
             # 文本消息 - 可能是控制命令
             try:
