@@ -460,20 +460,10 @@ def on_message(ws, message):
     """处理接收到的消息"""
     try:
         # 判断消息类型 - 文本还是二进制
-        print(f"收到消息: {message}")
+        # print(f"收到消息: {message}")
         if isinstance(message, str):
             # 文本消息 - 可能是控制命令
-            try:
-                data = json.loads(message)
-                
-                # 处理取消请求
-                if data.get("type") == "cancel_processing":
-                    session_id = data.get("session_id")
-                    logger.info(f"取消处理会话 {session_id}")
-                    # 这里可以添加取消正在进行的处理逻辑
-                
-            except json.JSONDecodeError:
-                logger.error(f"非JSON消息: {message}")
+            pass
         
         elif isinstance(message, bytes):
             # 直接处理二进制数据（音频）
