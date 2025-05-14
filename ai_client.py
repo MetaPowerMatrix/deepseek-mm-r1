@@ -624,7 +624,6 @@ def start_websocket():
     ws.run_forever(
         ping_interval=None,
         ping_timeout=None,
-        skip_utf8_validation=True
     )
     
     # 等待心跳线程结束
