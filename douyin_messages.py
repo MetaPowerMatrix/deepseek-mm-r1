@@ -279,7 +279,7 @@ async def main():
             "refresh_token": "your_refresh_token"
         },
         "cloud": {
-            "upload_url": "https://your.cloud.api/upload",
+            "upload_url": "https://api.kalaisai.com/upload",
             "auth_token": "your_cloud_auth_token"
         },
         "websocket": {
